@@ -11,10 +11,8 @@ from park_model import (
 class Simulation:
     """Discrete-time simulation of agents navigating a theme park network."""
 
-    def __init__(self, park: Park, num_agents: int = 500,
-                 dt: float = 1.0, seed: int = 42):
+    def __init__(self, park: Park, dt: float = 1.0, seed: int = 42):
         self.park = park
-        self.num_agents = num_agents
         self.dt = dt                    # time step in minutes
         self.rng = np.random.default_rng(seed)
         self.current_time: float = PARK_OPEN
@@ -28,34 +26,55 @@ class Simulation:
     # ------------------------------------------------------------------
 
     def generate_agents(self) -> None:
-        """Create agents with stochastic arrival/departure times and preferences."""
-        # Arrival peaks ~11am (120 min after 9am open), departure ~7pm (600 min)
-        arrivals = self.rng.normal(loc=120, scale=45, size=self.num_agents)
-        departures = self.rng.normal(loc=600, scale=60, size=self.num_agents)
+        """Create agents with stochastic arrival/departure times and preferences.
 
-        # Clip to valid park hours and ensure departure > arrival
-        arrivals = np.clip(arrivals, PARK_OPEN, PARK_CLOSE - 60)
-        departures = np.clip(departures, arrivals + 60, PARK_CLOSE)
+        Arrival model:
+          - 3000 agents at gate rush, staggered over ~30 min (exponential)
+          - 1000 agents/hour constant rate from t=30 to park close (Poisson)
 
+        Preferences:
+          - Multiplicative: pref ~ N(1.0, 0.3), floored at 0.1
+          - Effective enjoyment = enjoyment_score * pref
+        """
         attractions = self.park.get_attractions()
+        agent_id = 0
 
-        for i in range(self.num_agents):
-            agent = Agent(
-                agent_id=i,
-                arrival_time=float(arrivals[i]),
-                departure_time=float(departures[i]),
-                preference_noise=0.1,
-                decision_paralysis=self.rng.uniform(0.05, 0.20),
-            )
+        # Gate rush: 3000 agents staggered over first 30 minutes
+        gate_arrivals = self.rng.exponential(scale=5.0, size=3000)
+        gate_arrivals = np.clip(gate_arrivals, 0, 30)
+        gate_arrivals.sort()
 
-            # Per-agent preference multipliers for each attraction
-            for attr in attractions:
-                # Base preference ~1.0 with some randomness per agent
-                agent.preferences[attr.name] = max(
-                    0.1, self.rng.normal(loc=1.0, scale=0.25)
-                )
-
+        for arr in gate_arrivals:
+            dep = float(np.clip(self.rng.normal(600, 60), arr + 60, PARK_CLOSE))
+            agent = self._create_agent(agent_id, float(arr), dep, attractions)
             self.agents.append(agent)
+            agent_id += 1
+
+        # Steady state: ~17000 over 690 min = 24.6/min from t=30 to park close
+        for t_min in range(30, PARK_CLOSE):
+            n_arrivals = self.rng.poisson(17000 / 690)
+            for _ in range(n_arrivals):
+                arr = float(t_min) + self.rng.uniform(0, 1)
+                dep = float(np.clip(self.rng.normal(600, 60), arr + 60, PARK_CLOSE))
+                agent = self._create_agent(agent_id, arr, dep, attractions)
+                self.agents.append(agent)
+                agent_id += 1
+
+        print(f"Generated {len(self.agents)} agents "
+              f"(3000 gate rush + {len(self.agents) - 3000} steady state)")
+
+    def _create_agent(self, agent_id: int, arrival: float, departure: float,
+                      attractions: list) -> Agent:
+        """Create a single agent with random preferences."""
+        agent = Agent(
+            agent_id=agent_id,
+            arrival_time=arrival,
+            departure_time=departure,
+        )
+        # Multiplicative preference: pref ~ N(1.0, 0.3), floored at 0.1
+        for attr in attractions:
+            agent.preferences[attr.name] = max(0.1, self.rng.normal(1.0, 0.3))
+        return agent
 
     # ------------------------------------------------------------------
     # Simulation step
@@ -79,7 +98,7 @@ class Simulation:
             node.cycle_timer += self.dt
             if node.cycle_timer >= node.service_rate:
                 finished = node.process_cycle()
-                node.cycle_timer = 0.0
+                node.cycle_timer -= node.service_rate  # carry-over for accuracy
                 for agent in finished:
                     decay = agent._decay(t)
                     pref = agent.preferences.get(node.name, 1.0)
@@ -94,22 +113,27 @@ class Simulation:
                 continue
             if agent.state != "inactive" and agent.departure_time <= t:
                 # Remove from any queue
-                if agent.state == "queued" and agent.current_node:
+                if agent.state == "queued" and agent.target_node:
                     node = self.park.nodes.get(agent.target_node)
                     if node:
                         node.remove_from_queue(agent)
                 agent.state = "departed"
 
-        # Phase 4: Decisions — agents choose their next attraction
-        for agent in self.agents:
-            if agent.state != "deciding":
-                continue
+        # Phase 4: Decisions — sequential best-response (anti-herding)
+        # Shuffle deciding agents; each sees updated queue state from prior decisions
+        deciding = [a for a in self.agents if a.state == "deciding"]
+        self.rng.shuffle(deciding)
+
+        for agent in deciding:
             best = agent.choose_next_attraction(self.park, t)
             if best is not None:
                 travel = self.park.travel_time(agent.current_node, best)
                 agent.target_node = best
                 agent.time_remaining = travel
                 agent.state = "traveling"
+                # Signal commitment so next agent sees updated wait estimate
+                target_node = self.park.nodes[best]
+                target_node.pending_arrivals += 1
             else:
                 # Nothing worth doing — depart early
                 agent.state = "departed"
@@ -125,6 +149,7 @@ class Simulation:
                 target_node = self.park.nodes[agent.target_node]
                 if target_node.node_type == NodeType.ATTRACTION:
                     target_node.add_to_queue(agent)
+                    target_node.pending_arrivals = max(0, target_node.pending_arrivals - 1)
                     agent.state = "queued"
                 else:
                     agent.state = "deciding"
@@ -146,7 +171,7 @@ class Simulation:
 
     def run(self) -> dict:
         """Run the full simulation from park open to close."""
-        print(f"Running simulation: {self.num_agents} agents, "
+        print(f"Running simulation: {len(self.agents)} agents, "
               f"dt={self.dt}min, {PARK_CLOSE - PARK_OPEN} min day")
 
         while self.current_time <= PARK_CLOSE:
@@ -182,7 +207,6 @@ class Simulation:
 
     def summary(self) -> dict:
         """Compute aggregate statistics from the completed simulation."""
-        departed = [a for a in self.agents if a.state == "departed"]
         active_agents = [a for a in self.agents
                          if len(a.rides_completed) > 0 or a.total_happiness > 0]
 
@@ -202,6 +226,18 @@ class Simulation:
 
         most_congested = max(peak_queues, key=peak_queues.get) if peak_queues else "N/A"
 
+        # Per-ride average wait times
+        ride_total_wait = {}
+        ride_wait_counts = {}
+        for snapshot in self.history:
+            for ride, ql in snapshot["queue_lengths"].items():
+                ride_total_wait[ride] = ride_total_wait.get(ride, 0) + ql
+                ride_wait_counts[ride] = ride_wait_counts.get(ride, 0) + 1
+
+        avg_queue_by_ride = {}
+        for ride in ride_total_wait:
+            avg_queue_by_ride[ride] = ride_total_wait[ride] / ride_wait_counts[ride]
+
         results = {
             "num_agents": len(active_agents),
             "avg_happiness": np.mean(happinesses),
@@ -212,6 +248,7 @@ class Simulation:
             "avg_rides": np.mean(rides),
             "most_congested": most_congested,
             "peak_queue": peak_queues.get(most_congested, 0),
+            "avg_queue_by_ride": avg_queue_by_ride,
         }
         return results
 
@@ -286,8 +323,9 @@ if __name__ == "__main__":
     print(f"Built park: {park}")
     print(f"  Hubs: {[n.name for n in park.get_hubs()]}")
     print(f"  Attractions: {[n.name for n in park.get_attractions()]}")
+    print(f"  Capacity per cycle: {{n.name: n.capacity for n in park.get_attractions()}}")
 
-    sim = Simulation(park, num_agents=500, dt=1.0, seed=42)
+    sim = Simulation(park, dt=1.0, seed=42)
     sim.generate_agents()
     results = sim.run()
 
@@ -301,5 +339,10 @@ if __name__ == "__main__":
     print(f"  Avg rides completed: {results['avg_rides']:.1f}")
     print(f"  Most congested ride: {results['most_congested']} "
           f"(peak queue: {results['peak_queue']})")
+
+    print("\n=== AVG QUEUE BY RIDE ===")
+    for ride, avg_q in sorted(results['avg_queue_by_ride'].items(),
+                               key=lambda x: -x[1]):
+        print(f"  {ride:<50} {avg_q:.0f}")
 
     sim.plot_results()

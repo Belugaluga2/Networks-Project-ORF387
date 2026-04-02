@@ -36,18 +36,20 @@ class Node:
         self.name = name
         self.node_type = node_type
         self.area = area                # which themed area this belongs to
-        self.happiness = happiness      # intrinsic happiness value (0 for hubs)
+        self.happiness = happiness      # enjoyment score (0 for hubs)
         self.capacity = capacity        # riders per cycle
         self.service_rate = service_rate  # minutes per ride cycle
         self.queue: list = []           # agents currently in line
+        self.pending_arrivals: int = 0  # agents committed but still traveling
         self.cycle_timer: float = 0.0   # tracks time since last dispatch
 
     @property
     def current_wait_time(self) -> float:
-        """Estimated wait time based on queue length and throughput."""
+        """Estimated wait time based on queue length, pending arrivals, and throughput."""
         if self.node_type == NodeType.HUB or self.capacity == 0:
             return 0.0
-        cycles_needed = len(self.queue) / self.capacity
+        total_demand = len(self.queue) + self.pending_arrivals
+        cycles_needed = total_demand / self.capacity
         return cycles_needed * self.service_rate
 
     def add_to_queue(self, agent) -> None:
@@ -108,6 +110,23 @@ class Park:
         edge = Edge(source, target, weight)
         self.edges.append(edge)
         self.adj[source_name].append(edge)
+
+    def shortest_distances_from(self, source_name: str) -> dict[str, float]:
+        """Single-source Dijkstra returning distances to all reachable nodes."""
+        dist = {name: float('inf') for name in self.nodes}
+        dist[source_name] = 0.0
+        pq = [(0.0, source_name)]
+        while pq:
+            d, u = heapq.heappop(pq)
+            if d > dist[u]:
+                continue
+            for edge in self.adj[u]:
+                v = edge.target.name
+                new_dist = d + edge.weight
+                if new_dist < dist[v]:
+                    dist[v] = new_dist
+                    heapq.heappush(pq, (new_dist, v))
+        return dist
 
     def shortest_path(self, source_name: str, target_name: str) -> tuple[list[str], float]:
         """Dijkstra's algorithm. Returns (path_as_node_names, total_time)."""
@@ -175,13 +194,10 @@ class Park:
 class Agent:
     """A park visitor who makes utility-maximizing decisions."""
 
-    def __init__(self, agent_id: int, arrival_time: float, departure_time: float,
-                 preference_noise: float = 0.1, decision_paralysis: float = 0.1):
+    def __init__(self, agent_id: int, arrival_time: float, departure_time: float):
         self.agent_id = agent_id
         self.arrival_time = arrival_time
         self.departure_time = departure_time
-        self.preference_noise = preference_noise  # randomness in preferences
-        self.decision_paralysis = decision_paralysis
 
         # State
         self.current_node: str | None = None
@@ -206,8 +222,14 @@ class Agent:
         time_left = self.departure_time - current_time
         return max(0.0, time_left / total_stay)
 
-    def utility(self, attraction: Node, park: Park, current_time: float) -> float:
-        """U(a) = H(a) * pref * decay - W(a) - D(curr, a) - paralysis_penalty"""
+    def utility(self, attraction: Node, park: Park, current_time: float,
+                distances: dict[str, float] | None = None) -> float:
+        """U(a) = H(a) * pref * decay * reride_penalty / sqrt(1 + W + D)
+
+        Always non-negative. Higher enjoyment and lower wait/travel = higher utility.
+        """
+        import math
+
         time_left = self.departure_time - current_time
         if time_left <= 0:
             return float('-inf')
@@ -217,32 +239,35 @@ class Agent:
 
         H = attraction.happiness * pref * decay
         W = attraction.current_wait_time
-        D = park.travel_time(self.current_node, attraction.name)
+
+        # Use pre-computed distances if available, otherwise compute
+        if distances is not None:
+            D = distances.get(attraction.name, float('inf'))
+        else:
+            D = park.travel_time(self.current_node, attraction.name)
 
         # Can't make it in time
-        total_time_needed = D + attraction.current_wait_time + attraction.service_rate
+        total_time_needed = D + W + attraction.service_rate
         if total_time_needed > time_left:
             return float('-inf')
 
-        # Diminishing returns on re-rides
+        # Diminishing returns on re-rides: 1/(1 + 0.5n)
+        # 1st ride: 100%, 2nd: 67%, 3rd: 50%, 4th: 40%, 5th: 33%
         times_ridden = self.rides_completed.count(attraction.name)
-        if times_ridden > 0:
-            H *= 0.3 ** times_ridden
+        reride_penalty = 1.0 / (1.0 + 0.5 * times_ridden)
 
-        # Decision paralysis: cost of switching targets
-        paralysis_cost = 0.0
-        if self.target_node is not None and self.target_node != attraction.name:
-            paralysis_cost = self.decision_paralysis * H
-
-        return H - W - D - paralysis_cost
+        return H * reride_penalty / math.sqrt(1.0 + W + D)
 
     def choose_next_attraction(self, park: Park, current_time: float) -> str | None:
         """Pick the attraction with highest utility. Returns None if nothing is worth it."""
         best_name = None
         best_util = 0.0  # threshold: only go if utility is positive
 
+        # Single Dijkstra from current position
+        distances = park.shortest_distances_from(self.current_node)
+
         for attraction in park.get_attractions():
-            u = self.utility(attraction, park, current_time)
+            u = self.utility(attraction, park, current_time, distances)
             if u > best_util:
                 best_util = u
                 best_name = attraction.name
@@ -258,65 +283,39 @@ class Agent:
 # ---------------------------------------------------------------------------
 
 def build_epic_universe() -> Park:
-    """Construct the Epic Universe park graph."""
+    """Construct the Epic Universe park graph from real attraction data."""
+    from attraction_data import ATTRACTIONS, HUB_WALKING_TIMES, LANDS
+
     park = Park("Epic Universe")
 
-    # --- Hub Nodes (themed areas) ---
-    hubs = [
-        "Celestial Park",
-        "Wizarding World",
-        "Super Nintendo World",
-        "How to Train Your Dragon",
-        "Dark Universe",
-    ]
-    for name in hubs:
-        park.add_node(Node(name, NodeType.HUB, area=name))
+    # Hub nodes (one per land)
+    for land_name in LANDS:
+        park.add_node(Node(land_name, NodeType.HUB, area=land_name))
 
-    # --- Attraction Nodes ---
-    # (name, area, happiness, capacity_per_cycle, service_rate_minutes)
-    attractions = [
-        # Celestial Park
-        ("Starfall Racers",           "Celestial Park",          8.0, 24, 3.0),
-        ("Constellation Carousel",    "Celestial Park",          4.0, 40, 4.0),
+    # Ride nodes only (skip non-rides)
+    for name, data in ATTRACTIONS.items():
+        if data["type"] != "ride":
+            continue
+        cap_per_cycle = int(round(data["hourly_capacity"] * data["ride_time_min"] / 60))
+        park.add_node(Node(
+            name=name,
+            node_type=NodeType.ATTRACTION,
+            area=data["land"],
+            happiness=data["enjoyment_score"],
+            capacity=cap_per_cycle,
+            service_rate=data["ride_time_min"],
+        ))
 
-        # Wizarding World
-        ("Harry Potter Coaster",      "Wizarding World",        10.0, 20, 4.5),
-        ("Ministry of Magic",         "Wizarding World",         9.0, 16, 5.0),
+    # Hub-to-hub edges (bidirectional walking times)
+    for (hub_a, hub_b), walk_time in HUB_WALKING_TIMES.items():
+        park.add_edge(hub_a, hub_b, walk_time)
+        park.add_edge(hub_b, hub_a, walk_time)
 
-        # Super Nintendo World
-        ("Mario Kart Bowsers Challenge", "Super Nintendo World",  9.5, 16, 5.0),
-        ("Donkey Kong Mine Cart",     "Super Nintendo World",     9.0, 20, 3.5),
-        ("Yoshis Adventure",          "Super Nintendo World",     5.0, 30, 4.0),
-
-        # How to Train Your Dragon
-        ("Dragon Coaster",            "How to Train Your Dragon", 9.0, 24, 3.0),
-        ("Hiccups Wing Gliders",      "How to Train Your Dragon", 6.5, 20, 3.5),
-
-        # Dark Universe
-        ("Monsters Unchained",        "Dark Universe",            9.5, 18, 5.0),
-        ("Curse of the Werewolf",     "Dark Universe",            7.0, 22, 3.0),
-    ]
-    for name, area, h, cap, sr in attractions:
-        park.add_node(Node(name, NodeType.ATTRACTION, area, h, cap, sr))
-
-    # --- Hub-to-Hub Edges (walking times in minutes, bidirectional) ---
-    # Celestial Park is the central spoke connecting all areas
-    hub_connections = [
-        ("Celestial Park", "Wizarding World",        5.0),
-        ("Celestial Park", "Super Nintendo World",   6.0),
-        ("Celestial Park", "How to Train Your Dragon", 5.0),
-        ("Celestial Park", "Dark Universe",          6.0),
-        # Adjacent worlds have longer cross-connections
-        ("Wizarding World", "Super Nintendo World",  8.0),
-        ("Dark Universe", "How to Train Your Dragon", 8.0),
-    ]
-    for s, t, w in hub_connections:
-        park.add_edge(s, t, w)
-        park.add_edge(t, s, w)
-
-    # --- Hub-to-Attraction Edges (short walk to ride entrance) ---
-    for name, area, *_ in attractions:
-        park.add_edge(area, name, 1.5)  # hub -> attraction
-        park.add_edge(name, area, 1.5)  # attraction -> hub
+    # Hub-to-ride edges (1 min walking each direction, NOT wait time)
+    for name, data in ATTRACTIONS.items():
+        if data["type"] != "ride":
+            continue
+        park.add_edge(data["land"], name, 1.0)  # walk to ride entrance
+        park.add_edge(name, data["land"], 1.0)  # walk back after riding
 
     return park

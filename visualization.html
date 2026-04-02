@@ -1,0 +1,333 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Epic Universe Simulation</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { background: #1a1a2e; color: #eee; font-family: 'Segoe UI', sans-serif; overflow: hidden; }
+#container { display: flex; height: 100vh; }
+#canvas-wrap { flex: 1; position: relative; }
+canvas { display: block; width: 100%; height: 100%; }
+#sidebar { width: 300px; background: #16213e; padding: 16px; overflow-y: auto; }
+#sidebar h2 { color: #e94560; margin-bottom: 12px; font-size: 18px; }
+#controls { margin-bottom: 16px; }
+#controls label { display: block; margin: 6px 0 2px; font-size: 12px; color: #aaa; }
+#time-slider { width: 100%; }
+#play-btn { background: #e94560; border: none; color: white; padding: 8px 20px; cursor: pointer; border-radius: 4px; font-size: 14px; margin-right: 8px; }
+#play-btn:hover { background: #c7334e; }
+#speed-select { background: #0f3460; color: #eee; border: 1px solid #444; padding: 4px 8px; border-radius: 4px; }
+#clock { font-size: 32px; font-weight: bold; color: #e94560; text-align: center; margin: 10px 0; }
+#stats { margin: 12px 0; }
+#stats div { padding: 4px 0; font-size: 13px; border-bottom: 1px solid #1a1a2e; }
+#stats .label { color: #aaa; }
+#stats .value { float: right; color: #eee; font-weight: bold; }
+#queue-list { margin-top: 12px; }
+#queue-list h3 { color: #e94560; margin-bottom: 8px; font-size: 14px; }
+.queue-item { display: flex; align-items: center; margin: 4px 0; font-size: 12px; }
+.queue-bar-bg { flex: 1; height: 16px; background: #1a1a2e; border-radius: 3px; margin-left: 8px; overflow: hidden; }
+.queue-bar { height: 100%; border-radius: 3px; transition: width 0.3s; }
+.queue-name { width: 120px; text-overflow: ellipsis; overflow: hidden; white-space: nowrap; font-size: 11px; }
+.queue-count { width: 40px; text-align: right; font-size: 11px; color: #aaa; }
+#legend { margin-top: 16px; font-size: 11px; }
+#legend div { padding: 2px 0; }
+.dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 6px; vertical-align: middle; }
+#loading { position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: #1a1a2e; display: flex; align-items: center; justify-content: center; z-index: 100; font-size: 24px; color: #e94560; }
+</style>
+</head>
+<body>
+<div id="loading">Loading simulation data...</div>
+<div id="container" style="display:none;">
+  <div id="canvas-wrap"><canvas id="canvas"></canvas></div>
+  <div id="sidebar">
+    <h2>Epic Universe Simulation</h2>
+    <div id="clock">9:00 AM</div>
+    <div id="controls">
+      <div style="margin-bottom:8px;">
+        <button id="play-btn">Play</button>
+        <select id="speed-select">
+          <option value="1">1x</option>
+          <option value="2">2x</option>
+          <option value="5" selected>5x</option>
+          <option value="10">10x</option>
+          <option value="30">30x</option>
+        </select>
+      </div>
+      <label>Time</label>
+      <input type="range" id="time-slider" min="0" max="720" value="0">
+    </div>
+    <div id="stats">
+      <div><span class="label">In Park</span><span class="value" id="stat-inpark">0</span></div>
+      <div><span class="label">In Queues</span><span class="value" id="stat-queued">0</span></div>
+      <div><span class="label">Traveling</span><span class="value" id="stat-traveling">0</span></div>
+    </div>
+    <div id="queue-list">
+      <h3>Queue Lengths</h3>
+      <div id="queue-bars"></div>
+    </div>
+    <div id="legend">
+      <div><span class="dot" style="background:#e94560;"></span>Hub Node</div>
+      <div><span class="dot" style="background:#4ecdc4;"></span>Ride Node</div>
+      <div><span class="dot" style="background:#ffe66d;opacity:0.7;"></span>Agents in Queue</div>
+      <div><span class="dot" style="background:#95e1d3;opacity:0.7;"></span>Agents Traveling</div>
+    </div>
+  </div>
+</div>
+
+<script>
+const LAND_COLORS = {
+  "Celestial Park": "#a855f7",
+  "Super Nintendo World": "#ef4444",
+  "Dark Universe": "#6b7280",
+  "Wizarding World": "#3b82f6",
+  "Isle of Berk": "#22c55e",
+};
+
+let data = null;
+let currentFrame = 0;
+let playing = false;
+let speed = 5;
+let animId = null;
+let lastTime = 0;
+let particles = [];
+
+const canvas = document.getElementById("canvas");
+const ctx = canvas.getContext("2d");
+
+// Load data
+const fileInput = document.createElement("input");
+
+async function loadData() {
+  try {
+    const resp = await fetch("viz_data.json");
+    if (!resp.ok) throw new Error("viz_data.json not found");
+    data = await resp.json();
+    init();
+  } catch (e) {
+    document.getElementById("loading").innerHTML =
+      'Could not load viz_data.json.<br><br>' +
+      '<span style="font-size:14px;color:#aaa;">Run <code style="color:#4ecdc4;">python export_viz.py</code> first to generate the data file.</span>';
+  }
+}
+
+function init() {
+  document.getElementById("loading").style.display = "none";
+  document.getElementById("container").style.display = "flex";
+
+  resizeCanvas();
+  window.addEventListener("resize", resizeCanvas);
+
+  const slider = document.getElementById("time-slider");
+  slider.max = data.snapshots.length - 1;
+  slider.addEventListener("input", (e) => {
+    currentFrame = parseInt(e.target.value);
+    render();
+  });
+
+  document.getElementById("play-btn").addEventListener("click", togglePlay);
+  document.getElementById("speed-select").addEventListener("change", (e) => {
+    speed = parseInt(e.target.value);
+  });
+
+  // Build queue bars
+  const attractions = Object.entries(data.nodes)
+    .filter(([_, n]) => n.type === "attraction")
+    .sort((a, b) => b[1].happiness - a[1].happiness);
+
+  const barsDiv = document.getElementById("queue-bars");
+  for (const [name, node] of attractions) {
+    const shortName = name.length > 18 ? name.substring(0, 16) + "..." : name;
+    const color = LAND_COLORS[node.area] || "#888";
+    barsDiv.innerHTML += `
+      <div class="queue-item">
+        <span class="queue-name" title="${name}">${shortName}</span>
+        <div class="queue-bar-bg"><div class="queue-bar" id="qbar-${css(name)}" style="background:${color};width:0%;"></div></div>
+        <span class="queue-count" id="qcount-${css(name)}">0</span>
+      </div>`;
+  }
+
+  render();
+}
+
+function css(name) { return name.replace(/[^a-zA-Z0-9]/g, "_"); }
+
+function resizeCanvas() {
+  const wrap = document.getElementById("canvas-wrap");
+  canvas.width = wrap.clientWidth * window.devicePixelRatio;
+  canvas.height = wrap.clientHeight * window.devicePixelRatio;
+  canvas.style.width = wrap.clientWidth + "px";
+  canvas.style.height = wrap.clientHeight + "px";
+  ctx.setTransform(window.devicePixelRatio, 0, 0, window.devicePixelRatio, 0, 0);
+  if (data) render();
+}
+
+function getNodePos(name) {
+  const n = data.nodes[name];
+  const wrap = document.getElementById("canvas-wrap");
+  const sx = wrap.clientWidth / 800;
+  const sy = wrap.clientHeight / 600;
+  return { x: n.x * sx, y: n.y * sy };
+}
+
+function togglePlay() {
+  playing = !playing;
+  document.getElementById("play-btn").textContent = playing ? "Pause" : "Play";
+  if (playing) {
+    lastTime = performance.now();
+    animate();
+  } else if (animId) {
+    cancelAnimationFrame(animId);
+  }
+}
+
+function animate() {
+  const now = performance.now();
+  const elapsed = now - lastTime;
+  if (elapsed > 1000 / (speed * 2)) {
+    lastTime = now;
+    currentFrame++;
+    if (currentFrame >= data.snapshots.length) {
+      currentFrame = 0;
+    }
+    document.getElementById("time-slider").value = currentFrame;
+    render();
+  }
+  if (playing) animId = requestAnimationFrame(animate);
+}
+
+function render() {
+  const snap = data.snapshots[currentFrame];
+  if (!snap) return;
+
+  const w = canvas.width / window.devicePixelRatio;
+  const h = canvas.height / window.devicePixelRatio;
+
+  ctx.clearRect(0, 0, w, h);
+
+  // Draw edges
+  for (const edge of data.edges) {
+    const from = getNodePos(edge.source);
+    const to = getNodePos(edge.target);
+    ctx.beginPath();
+    ctx.moveTo(from.x, from.y);
+    ctx.lineTo(to.x, to.y);
+    ctx.strokeStyle = "rgba(255,255,255,0.08)";
+    ctx.lineWidth = 1;
+    ctx.stroke();
+  }
+
+  // Draw traveling agents as moving dots on edges
+  if (snap.traveling_edges) {
+    for (const [key, count] of Object.entries(snap.traveling_edges)) {
+      const [srcName, tgtName] = key.split("|");
+      if (!data.nodes[srcName] || !data.nodes[tgtName]) continue;
+      const from = getNodePos(srcName);
+      const to = getNodePos(tgtName);
+
+      // Draw edge glow proportional to traffic
+      ctx.beginPath();
+      ctx.moveTo(from.x, from.y);
+      ctx.lineTo(to.x, to.y);
+      ctx.strokeStyle = `rgba(149,225,211,${Math.min(0.6, count / 200)})`;
+      ctx.lineWidth = Math.min(6, 1 + count / 50);
+      ctx.stroke();
+
+      // Draw a few dots along the edge
+      const numDots = Math.min(10, Math.ceil(count / 20));
+      for (let i = 0; i < numDots; i++) {
+        const t = ((currentFrame * 0.05 + i / numDots) % 1);
+        const px = from.x + (to.x - from.x) * t;
+        const py = from.y + (to.y - from.y) * t;
+        ctx.beginPath();
+        ctx.arc(px, py, 2.5, 0, Math.PI * 2);
+        ctx.fillStyle = "rgba(149,225,211,0.8)";
+        ctx.fill();
+      }
+    }
+  }
+
+  // Draw nodes
+  for (const [name, node] of Object.entries(data.nodes)) {
+    const pos = getNodePos(name);
+    const isHub = node.type === "hub";
+    const color = LAND_COLORS[node.area] || "#888";
+    const queueLen = snap.queue_lengths?.[name] || 0;
+
+    if (isHub) {
+      // Hub: larger circle
+      ctx.beginPath();
+      ctx.arc(pos.x, pos.y, 18, 0, Math.PI * 2);
+      ctx.fillStyle = color;
+      ctx.globalAlpha = 0.3;
+      ctx.fill();
+      ctx.globalAlpha = 1;
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 2;
+      ctx.stroke();
+
+      // Hub label
+      ctx.fillStyle = "#fff";
+      ctx.font = "bold 11px 'Segoe UI', sans-serif";
+      ctx.textAlign = "center";
+      ctx.fillText(name, pos.x, pos.y - 24);
+    } else {
+      // Attraction: show queue as expanding ring
+      const maxQueue = 2000;
+      const queueRatio = Math.min(1, queueLen / maxQueue);
+
+      // Queue glow
+      if (queueLen > 0) {
+        const glowR = 8 + queueRatio * 30;
+        ctx.beginPath();
+        ctx.arc(pos.x, pos.y, glowR, 0, Math.PI * 2);
+        ctx.fillStyle = `rgba(255,230,109,${0.1 + queueRatio * 0.3})`;
+        ctx.fill();
+      }
+
+      // Ride dot
+      ctx.beginPath();
+      ctx.arc(pos.x, pos.y, 8, 0, Math.PI * 2);
+      ctx.fillStyle = color;
+      ctx.fill();
+      ctx.strokeStyle = "#fff";
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
+
+      // Queue count label
+      if (queueLen > 0) {
+        ctx.fillStyle = "#ffe66d";
+        ctx.font = "bold 10px 'Segoe UI', sans-serif";
+        ctx.textAlign = "center";
+        ctx.fillText(queueLen.toLocaleString(), pos.x, pos.y + 22);
+      }
+
+      // Ride name
+      ctx.fillStyle = "rgba(255,255,255,0.7)";
+      ctx.font = "9px 'Segoe UI', sans-serif";
+      ctx.textAlign = "center";
+      const shortName = name.length > 20 ? name.substring(0, 18) + "..." : name;
+      ctx.fillText(shortName, pos.x, pos.y - 14);
+    }
+  }
+
+  // Update sidebar
+  document.getElementById("clock").textContent = snap.hour;
+  document.getElementById("stat-inpark").textContent = snap.total_in_park.toLocaleString();
+  document.getElementById("stat-queued").textContent = snap.total_queued.toLocaleString();
+  document.getElementById("stat-traveling").textContent = snap.total_traveling.toLocaleString();
+  document.getElementById("time-slider").value = currentFrame;
+
+  // Update queue bars
+  const maxQ = Math.max(1, ...Object.values(snap.queue_lengths || {}));
+  for (const [name, q] of Object.entries(snap.queue_lengths || {})) {
+    const bar = document.getElementById(`qbar-${css(name)}`);
+    const count = document.getElementById(`qcount-${css(name)}`);
+    if (bar) bar.style.width = (q / maxQ * 100) + "%";
+    if (count) count.textContent = q.toLocaleString();
+  }
+}
+
+loadData();
+</script>
+</body>
+</html>

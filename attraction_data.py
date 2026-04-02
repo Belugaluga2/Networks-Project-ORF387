@@ -20,6 +20,8 @@ ATTRACTIONS = {
         "avg_wait_min": 38,
         "hourly_capacity": 2700,
         "ride_time_min": 1.5,
+        "riders_per_hour": 2700,
+        "enjoyment_score": 8.1,
     },
     "Constellation Carousel": {
         "land": "Celestial Park",
@@ -27,6 +29,8 @@ ATTRACTIONS = {
         "avg_wait_min": 18,
         "hourly_capacity": 480,
         "ride_time_min": 2,
+        "riders_per_hour": 480,
+        "enjoyment_score": 1.0,
     },
     "Astronomica": {
         "land": "Celestial Park",
@@ -43,6 +47,8 @@ ATTRACTIONS = {
         "avg_wait_min": 96,
         "hourly_capacity": 1100,
         "ride_time_min": 4,
+        "riders_per_hour": 1100,
+        "enjoyment_score": 8.2,
     },
     "Mine-Cart Madness": {
         "land": "Super Nintendo World",
@@ -50,6 +56,8 @@ ATTRACTIONS = {
         "avg_wait_min": 116,
         "hourly_capacity": 750,
         "ride_time_min": 2,  # not found online, using default
+        "riders_per_hour": 750,
+        "enjoyment_score": 7.7,
     },
     "Yoshi's Adventure": {
         "land": "Super Nintendo World",
@@ -57,6 +65,8 @@ ATTRACTIONS = {
         "avg_wait_min": 45,
         "hourly_capacity": 675,
         "ride_time_min": 5,
+        "riders_per_hour": 675,
+        "enjoyment_score": 4.6,
     },
     "Mario & Luigi Meet and Greet": {
         "land": "Super Nintendo World",
@@ -94,6 +104,8 @@ ATTRACTIONS = {
         "avg_wait_min": 29,
         "hourly_capacity": 2400,
         "ride_time_min": 4,
+        "riders_per_hour": 2400,
+        "enjoyment_score": 7.0,
     },
     "Curse of the Werewolf": {
         "land": "Dark Universe",
@@ -101,6 +113,8 @@ ATTRACTIONS = {
         "avg_wait_min": 54,
         "hourly_capacity": 750,
         "ride_time_min": 2,
+        "riders_per_hour": 750,
+        "enjoyment_score": 5.4,
     },
     "Dark Universe Character Meet & Greet": {
         "land": "Dark Universe",
@@ -121,9 +135,11 @@ ATTRACTIONS = {
     "Harry Potter and the Battle at the Ministry": {
         "land": "Wizarding World",
         "type": "ride",
-        "avg_wait_min": 135,
+        "avg_wait_min": 90,  # adjusted from 135 (real) to optimal: 135 * 1450/2184
         "hourly_capacity": 2184,
         "ride_time_min": 4.5,
+        "riders_per_hour": 2184,
+        "enjoyment_score": 10.0,
     },
     "Le Cirque Arcanus": {
         "land": "Wizarding World",
@@ -147,6 +163,8 @@ ATTRACTIONS = {
         "avg_wait_min": 62,
         "hourly_capacity": 1800,
         "ride_time_min": 2,
+        "riders_per_hour": 1800,
+        "enjoyment_score": 8.4,
     },
     "Dragon Racer's Rally": {
         "land": "Isle of Berk",
@@ -154,13 +172,17 @@ ATTRACTIONS = {
         "avg_wait_min": 45,
         "hourly_capacity": 275,
         "ride_time_min": 1.5,
+        "riders_per_hour": 275,
+        "enjoyment_score": 2.0,
     },
     "Fyre Drill": {
         "land": "Isle of Berk",
         "type": "ride",
         "avg_wait_min": 30,
-        "hourly_capacity": None,
+        "hourly_capacity": 600,
         "ride_time_min": 3.5,
+        "riders_per_hour": 600,
+        "enjoyment_score": 3.1,
     },
     "The Untrainable Dragon": {
         "land": "Isle of Berk",
