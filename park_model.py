@@ -39,7 +39,8 @@ class Node:
         self.happiness = happiness      # enjoyment score (0 for hubs)
         self.capacity = capacity        # riders per cycle
         self.service_rate = service_rate  # minutes per ride cycle
-        self.queue: list = []           # agents currently in line
+        self.queue: list = []           # agents currently in line (regular)
+        self.priority_queue: list = []  # agents with skip-the-line passes
         self.pending_arrivals: int = 0  # agents committed but still traveling
         self.cycle_timer: float = 0.0   # tracks time since last dispatch
 
@@ -59,13 +60,24 @@ class Node:
         if agent in self.queue:
             self.queue.remove(agent)
 
+    def add_to_priority_queue(self, agent) -> None:
+        self.priority_queue.append(agent)
+
     def process_cycle(self) -> list:
-        """Remove up to `capacity` agents from front of queue (they finished the ride).
-        Returns list of agents who completed the ride."""
+        """Remove up to `capacity` agents. Priority queue riders go first,
+        then regular queue fills remaining spots."""
         if self.node_type == NodeType.HUB or self.capacity == 0:
             return []
-        finished = self.queue[:self.capacity]
-        self.queue = self.queue[self.capacity:]
+        finished = []
+        # Priority queue first
+        priority_take = min(len(self.priority_queue), self.capacity)
+        finished.extend(self.priority_queue[:priority_take])
+        self.priority_queue = self.priority_queue[priority_take:]
+        # Regular queue fills remaining capacity
+        remaining = self.capacity - priority_take
+        if remaining > 0:
+            finished.extend(self.queue[:remaining])
+            self.queue = self.queue[remaining:]
         return finished
 
     def __repr__(self):
@@ -204,15 +216,24 @@ class Agent:
         self.target_node: str | None = None
         self.state: str = "inactive"  # inactive, traveling, queued, riding, deciding, departed
         self.time_remaining: float = 0.0
+        self.using_pass: bool = False  # will this agent skip queue on arrival?
 
         # Tracking
         self.total_happiness: float = 0.0
         self.total_wait_time: float = 0.0
         self.total_travel_time: float = 0.0
         self.rides_completed: list[str] = []
+        self.passes_used: int = 0
 
         # Per-agent preference multipliers (set during generation)
         self.preferences: dict[str, float] = {}
+
+        # Skip-the-line passes
+        self.pass_strategy: str = "none"  # "none", "preselect", "dynamic", "preselect_timed"
+        self.preselect_passes: list[str] = []  # ride names (Strategy 1)
+        self.dynamic_passes: int = 0           # remaining passes (Strategy 2)
+        self.dynamic_pass_threshold: float = 30.0  # use pass if wait > this
+        self.timed_passes: list[dict] = []     # Strategy 3: [{"ride", "slot_time", "window_start", "window_end", "used"}]
 
     def _decay(self, current_time: float) -> float:
         """Linear happiness decay: full at arrival, zero at departure."""
@@ -222,11 +243,112 @@ class Agent:
         time_left = self.departure_time - current_time
         return max(0.0, time_left / total_stay)
 
+    def has_pass_for(self, ride_name: str) -> bool:
+        """Check if this agent can skip the queue for a given ride."""
+        if self.pass_strategy == "preselect":
+            return ride_name in self.preselect_passes
+        elif self.pass_strategy == "dynamic":
+            return self.dynamic_passes > 0
+        return False
+
+    def has_active_timed_pass(self, ride_name: str, current_time: float) -> bool:
+        """Check if agent has a timed pass currently valid for this ride."""
+        for p in self.timed_passes:
+            if p["ride"] == ride_name and not p["used"]:
+                if p["window_start"] <= current_time <= p["window_end"]:
+                    return True
+        return False
+
+    def get_upcoming_timed_pass(self, ride_name: str, current_time: float) -> dict | None:
+        """Get the next upcoming timed pass for this ride (within 30 min)."""
+        for p in self.timed_passes:
+            if p["ride"] == ride_name and not p["used"]:
+                if current_time <= p["window_end"] and p["window_start"] - current_time <= 30:
+                    return p
+        return None
+
+    def would_use_dynamic_pass(self, wait_time: float) -> bool:
+        """For dynamic strategy: would the agent burn a pass at this wait?"""
+        return (self.pass_strategy == "dynamic"
+                and self.dynamic_passes > 0
+                and wait_time > self.dynamic_pass_threshold)
+
+    def consume_pass(self, ride_name: str, current_time: float = 0.0) -> None:
+        """Use up a pass for the given ride."""
+        if self.pass_strategy == "preselect" and ride_name in self.preselect_passes:
+            self.preselect_passes.remove(ride_name)
+            self.passes_used += 1
+        elif self.pass_strategy == "preselect_timed":
+            for p in self.timed_passes:
+                if p["ride"] == ride_name and not p["used"]:
+                    if p["window_start"] <= current_time <= p["window_end"]:
+                        p["used"] = True
+                        self.passes_used += 1
+                        break
+        elif self.pass_strategy == "dynamic" and self.dynamic_passes > 0:
+            self.dynamic_passes -= 1
+            self.passes_used += 1
+
+    def assign_preselected_passes(self, park: Park) -> None:
+        """Pick top 3 rides by personal preference for skip passes."""
+        ride_scores = []
+        for attr in park.get_attractions():
+            pref = self.preferences.get(attr.name, 1.0)
+            ride_scores.append((attr.happiness * pref, attr.name))
+        ride_scores.sort(reverse=True)
+        self.preselect_passes = [name for _, name in ride_scores[:3]]
+
+    def assign_timed_passes(self, park: Park, slot_counters: dict) -> None:
+        """Pick top 3 rides and assign evenly-distributed 5-min time slots.
+
+        slot_counters: dict[ride_name] -> int (next slot index, 0-143 wrapping)
+        Each slot = 5-min window. Agents get the next available slot round-robin.
+        Passes must be at least 30 min apart.
+        """
+        ride_scores = []
+        for attr in park.get_attractions():
+            pref = self.preferences.get(attr.name, 1.0)
+            ride_scores.append((attr.happiness * pref, attr.name))
+        ride_scores.sort(reverse=True)
+        top_rides = [name for _, name in ride_scores[:3]]
+
+        # Assign slot for each ride
+        raw_passes = []
+        for ride in top_rides:
+            slot_idx = slot_counters[ride] % 144
+            slot_time = slot_idx * 5  # minutes from park open
+            slot_counters[ride] += 1
+            raw_passes.append({"ride": ride, "slot_time": slot_time})
+
+        # Sort by time and enforce 30-min gap
+        raw_passes.sort(key=lambda p: p["slot_time"])
+        for i in range(1, len(raw_passes)):
+            prev_time = raw_passes[i - 1]["slot_time"]
+            if raw_passes[i]["slot_time"] - prev_time < 30:
+                # Push this slot forward to satisfy gap
+                new_time = prev_time + 30
+                # Snap to next 5-min boundary
+                new_time = ((int(new_time) // 5) + 1) * 5
+                raw_passes[i]["slot_time"] = min(new_time, 715)
+
+        # Build timed passes with 30-min windows (±15 min around slot)
+        self.timed_passes = []
+        for p in raw_passes:
+            t = p["slot_time"]
+            self.timed_passes.append({
+                "ride": p["ride"],
+                "slot_time": t,
+                "window_start": max(0, t - 15),
+                "window_end": min(720, t + 15),
+                "used": False,
+            })
+
     def utility(self, attraction: Node, park: Park, current_time: float,
                 distances: dict[str, float] | None = None) -> float:
         """U(a) = H(a) * pref * decay * reride_penalty / sqrt(1 + W + D)
 
         Always non-negative. Higher enjoyment and lower wait/travel = higher utility.
+        If agent has a pass for this ride, W=0 in the formula.
         """
         import math
 
@@ -239,6 +361,22 @@ class Agent:
 
         H = attraction.happiness * pref * decay
         W = attraction.current_wait_time
+
+        # Check if agent would skip the queue with a pass
+        will_skip = False
+        if self.pass_strategy == "preselect" and attraction.name in self.preselect_passes:
+            will_skip = True
+        elif self.pass_strategy == "preselect_timed":
+            if self.has_active_timed_pass(attraction.name, current_time):
+                will_skip = True
+            elif self.get_upcoming_timed_pass(attraction.name, current_time):
+                # Upcoming pass within 30 min — boost utility to encourage traveling there
+                will_skip = True
+        elif self.would_use_dynamic_pass(W):
+            will_skip = True
+
+        if will_skip:
+            W = 0.0
 
         # Use pre-computed distances if available, otherwise compute
         if distances is not None:

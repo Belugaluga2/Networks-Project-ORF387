@@ -9,19 +9,25 @@ body { background: #1a1a2e; color: #eee; font-family: 'Segoe UI', sans-serif; ov
 #container { display: flex; height: 100vh; }
 #canvas-wrap { flex: 1; position: relative; }
 canvas { display: block; width: 100%; height: 100%; }
-#sidebar { width: 300px; background: #16213e; padding: 16px; overflow-y: auto; }
+#sidebar { width: 320px; background: #16213e; padding: 16px; overflow-y: auto; }
 #sidebar h2 { color: #e94560; margin-bottom: 12px; font-size: 18px; }
 #controls { margin-bottom: 16px; }
 #controls label { display: block; margin: 6px 0 2px; font-size: 12px; color: #aaa; }
 #time-slider { width: 100%; }
 #play-btn { background: #e94560; border: none; color: white; padding: 8px 20px; cursor: pointer; border-radius: 4px; font-size: 14px; margin-right: 8px; }
 #play-btn:hover { background: #c7334e; }
-#speed-select { background: #0f3460; color: #eee; border: 1px solid #444; padding: 4px 8px; border-radius: 4px; }
+#speed-select, #strategy-select { background: #0f3460; color: #eee; border: 1px solid #444; padding: 4px 8px; border-radius: 4px; font-size: 13px; }
+#strategy-select { width: 100%; margin-top: 4px; }
 #clock { font-size: 32px; font-weight: bold; color: #e94560; text-align: center; margin: 10px 0; }
 #stats { margin: 12px 0; }
 #stats div { padding: 4px 0; font-size: 13px; border-bottom: 1px solid #1a1a2e; }
 #stats .label { color: #aaa; }
 #stats .value { float: right; color: #eee; font-weight: bold; }
+#summary-box { background: #0f3460; border-radius: 6px; padding: 10px; margin: 12px 0; font-size: 12px; }
+#summary-box h3 { color: #e94560; margin-bottom: 6px; font-size: 13px; }
+#summary-box .row { display: flex; justify-content: space-between; padding: 2px 0; }
+#summary-box .row .lbl { color: #aaa; }
+#summary-box .row .val { color: #4ecdc4; font-weight: bold; }
 #queue-list { margin-top: 12px; }
 #queue-list h3 { color: #e94560; margin-bottom: 8px; font-size: 14px; }
 .queue-item { display: flex; align-items: center; margin: 4px 0; font-size: 12px; }
@@ -43,7 +49,9 @@ canvas { display: block; width: 100%; height: 100%; }
     <h2>Epic Universe Simulation</h2>
     <div id="clock">9:00 AM</div>
     <div id="controls">
-      <div style="margin-bottom:8px;">
+      <label>Virtual Queue Strategy</label>
+      <select id="strategy-select"></select>
+      <div style="margin-top:8px; margin-bottom:8px;">
         <button id="play-btn">Play</button>
         <select id="speed-select">
           <option value="1">1x</option>
@@ -55,6 +63,18 @@ canvas { display: block; width: 100%; height: 100%; }
       </div>
       <label>Time</label>
       <input type="range" id="time-slider" min="0" max="720" value="0">
+    </div>
+    <div id="summary-box">
+      <h3>Strategy Summary</h3>
+      <div class="row"><span class="lbl">Total Happiness</span><span class="val" id="sum-happiness">-</span></div>
+      <div class="row"><span class="lbl">Avg Happiness</span><span class="val" id="sum-avg-happiness">-</span></div>
+      <div class="row"><span class="lbl">Avg Wait (min)</span><span class="val" id="sum-avg-wait">-</span></div>
+      <div class="row"><span class="lbl">Avg Rides</span><span class="val" id="sum-avg-rides">-</span></div>
+      <div class="row"><span class="lbl">Total Passes Used</span><span class="val" id="sum-passes">-</span></div>
+      <div class="row"><span class="lbl">Peak Queue</span><span class="val" id="sum-peak">-</span></div>
+      <div class="row" style="margin-top:4px;border-top:1px solid #1a1a2e;padding-top:4px;">
+        <span class="lbl">vs Baseline</span><span class="val" id="sum-pct" style="color:#ffe66d;">-</span>
+      </div>
     </div>
     <div id="stats">
       <div><span class="label">In Park</span><span class="value" id="stat-inpark">0</span></div>
@@ -84,18 +104,15 @@ const LAND_COLORS = {
 };
 
 let data = null;
+let currentStrategy = "none";
 let currentFrame = 0;
 let playing = false;
 let speed = 5;
 let animId = null;
 let lastTime = 0;
-let particles = [];
 
 const canvas = document.getElementById("canvas");
 const ctx = canvas.getContext("2d");
-
-// Load data
-const fileInput = document.createElement("input");
 
 async function loadData() {
   try {
@@ -117,8 +134,23 @@ function init() {
   resizeCanvas();
   window.addEventListener("resize", resizeCanvas);
 
+  // Populate strategy dropdown
+  const stratSelect = document.getElementById("strategy-select");
+  for (const [key, strat] of Object.entries(data.strategies)) {
+    const opt = document.createElement("option");
+    opt.value = key;
+    opt.textContent = strat.label;
+    stratSelect.appendChild(opt);
+  }
+  stratSelect.addEventListener("change", (e) => {
+    currentStrategy = e.target.value;
+    currentFrame = 0;
+    document.getElementById("time-slider").value = 0;
+    updateSummary();
+    render();
+  });
+
   const slider = document.getElementById("time-slider");
-  slider.max = data.snapshots.length - 1;
   slider.addEventListener("input", (e) => {
     currentFrame = parseInt(e.target.value);
     render();
@@ -146,7 +178,41 @@ function init() {
       </div>`;
   }
 
+  // Set initial slider max
+  const snapshots = data.strategies[currentStrategy].snapshots;
+  slider.max = snapshots.length - 1;
+
+  updateSummary();
   render();
+}
+
+function updateSummary() {
+  const strat = data.strategies[currentStrategy];
+  const s = strat.summary;
+  if (!s) return;
+
+  document.getElementById("sum-happiness").textContent = Math.round(s.total_park_happiness).toLocaleString();
+  document.getElementById("sum-avg-happiness").textContent = s.avg_happiness.toFixed(1);
+  document.getElementById("sum-avg-wait").textContent = s.avg_wait.toFixed(1);
+  document.getElementById("sum-avg-rides").textContent = s.avg_rides.toFixed(1);
+  document.getElementById("sum-passes").textContent = (s.total_passes_used || 0).toLocaleString();
+  document.getElementById("sum-peak").textContent = (s.peak_queue || 0).toLocaleString();
+
+  // % vs baseline
+  const baseline = data.strategies["none"];
+  if (baseline && baseline.summary && currentStrategy !== "none") {
+    const base = baseline.summary.total_park_happiness;
+    const pct = ((s.total_park_happiness - base) / base * 100);
+    document.getElementById("sum-pct").textContent = (pct >= 0 ? "+" : "") + pct.toFixed(1) + "%";
+    document.getElementById("sum-pct").style.color = pct >= 0 ? "#4ecdc4" : "#ef4444";
+  } else {
+    document.getElementById("sum-pct").textContent = "—";
+    document.getElementById("sum-pct").style.color = "#aaa";
+  }
+
+  // Update slider max for this strategy
+  const slider = document.getElementById("time-slider");
+  slider.max = strat.snapshots.length - 1;
 }
 
 function css(name) { return name.replace(/[^a-zA-Z0-9]/g, "_"); }
@@ -186,7 +252,8 @@ function animate() {
   if (elapsed > 1000 / (speed * 2)) {
     lastTime = now;
     currentFrame++;
-    if (currentFrame >= data.snapshots.length) {
+    const snapshots = data.strategies[currentStrategy].snapshots;
+    if (currentFrame >= snapshots.length) {
       currentFrame = 0;
     }
     document.getElementById("time-slider").value = currentFrame;
@@ -196,7 +263,9 @@ function animate() {
 }
 
 function render() {
-  const snap = data.snapshots[currentFrame];
+  const strat = data.strategies[currentStrategy];
+  if (!strat) return;
+  const snap = strat.snapshots[currentFrame];
   if (!snap) return;
 
   const w = canvas.width / window.devicePixelRatio;
@@ -224,7 +293,6 @@ function render() {
       const from = getNodePos(srcName);
       const to = getNodePos(tgtName);
 
-      // Draw edge glow proportional to traffic
       ctx.beginPath();
       ctx.moveTo(from.x, from.y);
       ctx.lineTo(to.x, to.y);
@@ -232,7 +300,6 @@ function render() {
       ctx.lineWidth = Math.min(6, 1 + count / 50);
       ctx.stroke();
 
-      // Draw a few dots along the edge
       const numDots = Math.min(10, Math.ceil(count / 20));
       for (let i = 0; i < numDots; i++) {
         const t = ((currentFrame * 0.05 + i / numDots) % 1);
@@ -254,7 +321,6 @@ function render() {
     const queueLen = snap.queue_lengths?.[name] || 0;
 
     if (isHub) {
-      // Hub: larger circle
       ctx.beginPath();
       ctx.arc(pos.x, pos.y, 18, 0, Math.PI * 2);
       ctx.fillStyle = color;
@@ -265,17 +331,14 @@ function render() {
       ctx.lineWidth = 2;
       ctx.stroke();
 
-      // Hub label
       ctx.fillStyle = "#fff";
       ctx.font = "bold 11px 'Segoe UI', sans-serif";
       ctx.textAlign = "center";
       ctx.fillText(name, pos.x, pos.y - 24);
     } else {
-      // Attraction: show queue as expanding ring
       const maxQueue = 2000;
       const queueRatio = Math.min(1, queueLen / maxQueue);
 
-      // Queue glow
       if (queueLen > 0) {
         const glowR = 8 + queueRatio * 30;
         ctx.beginPath();
@@ -284,7 +347,6 @@ function render() {
         ctx.fill();
       }
 
-      // Ride dot
       ctx.beginPath();
       ctx.arc(pos.x, pos.y, 8, 0, Math.PI * 2);
       ctx.fillStyle = color;
@@ -293,7 +355,6 @@ function render() {
       ctx.lineWidth = 1.5;
       ctx.stroke();
 
-      // Queue count label
       if (queueLen > 0) {
         ctx.fillStyle = "#ffe66d";
         ctx.font = "bold 10px 'Segoe UI', sans-serif";
@@ -301,7 +362,6 @@ function render() {
         ctx.fillText(queueLen.toLocaleString(), pos.x, pos.y + 22);
       }
 
-      // Ride name
       ctx.fillStyle = "rgba(255,255,255,0.7)";
       ctx.font = "9px 'Segoe UI', sans-serif";
       ctx.textAlign = "center";
@@ -317,7 +377,6 @@ function render() {
   document.getElementById("stat-traveling").textContent = snap.total_traveling.toLocaleString();
   document.getElementById("time-slider").value = currentFrame;
 
-  // Update queue bars
   const maxQ = Math.max(1, ...Object.values(snap.queue_lengths || {}));
   for (const [name, q] of Object.entries(snap.queue_lengths || {})) {
     const bar = document.getElementById(`qbar-${css(name)}`);

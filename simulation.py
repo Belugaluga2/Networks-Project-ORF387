@@ -11,12 +11,14 @@ from park_model import (
 class Simulation:
     """Discrete-time simulation of agents navigating a theme park network."""
 
-    def __init__(self, park: Park, dt: float = 1.0, seed: int = 42):
+    def __init__(self, park: Park, dt: float = 1.0, seed: int = 42,
+                 pass_strategy: str = "none"):
         self.park = park
         self.dt = dt                    # time step in minutes
         self.rng = np.random.default_rng(seed)
         self.current_time: float = PARK_OPEN
         self.agents: list[Agent] = []
+        self.pass_strategy = pass_strategy  # "none", "preselect", "dynamic"
 
         # History: one snapshot per timestep
         self.history: list[dict] = []
@@ -60,6 +62,12 @@ class Simulation:
                 self.agents.append(agent)
                 agent_id += 1
 
+        # For timed passes, assign slots after all agents are created
+        if self.pass_strategy == "preselect_timed":
+            slot_counters = {n.name: 0 for n in self.park.get_attractions()}
+            for agent in self.agents:
+                agent.assign_timed_passes(self.park, slot_counters)
+
         print(f"Generated {len(self.agents)} agents "
               f"(3000 gate rush + {len(self.agents) - 3000} steady state)")
 
@@ -74,6 +82,15 @@ class Simulation:
         # Multiplicative preference: pref ~ N(1.0, 0.3), floored at 0.1
         for attr in attractions:
             agent.preferences[attr.name] = max(0.1, self.rng.normal(1.0, 0.3))
+
+        # Assign pass strategy
+        agent.pass_strategy = self.pass_strategy
+        if self.pass_strategy == "preselect":
+            agent.assign_preselected_passes(self.park)
+        elif self.pass_strategy == "dynamic":
+            agent.dynamic_passes = 3
+        # preselect_timed is assigned after all agents are created (needs shared counters)
+
         return agent
 
     # ------------------------------------------------------------------
@@ -92,7 +109,7 @@ class Simulation:
 
         # Phase 2: Ride processing — dispatch riders on completed cycles
         for node in self.park.get_attractions():
-            if len(node.queue) == 0:
+            if len(node.queue) == 0 and len(node.priority_queue) == 0:
                 node.cycle_timer = 0.0
                 continue
             node.cycle_timer += self.dt
@@ -131,9 +148,23 @@ class Simulation:
                 agent.target_node = best
                 agent.time_remaining = travel
                 agent.state = "traveling"
-                # Signal commitment so next agent sees updated wait estimate
+
+                # Determine if agent will use a pass on arrival
                 target_node = self.park.nodes[best]
-                target_node.pending_arrivals += 1
+                W = target_node.current_wait_time
+                if agent.pass_strategy == "preselect" and best in agent.preselect_passes:
+                    agent.using_pass = True
+                elif agent.pass_strategy == "preselect_timed" and agent.has_active_timed_pass(best, t):
+                    agent.using_pass = True
+                elif agent.would_use_dynamic_pass(W):
+                    agent.using_pass = True
+                else:
+                    agent.using_pass = False
+
+                # Signal commitment so next agent sees updated wait estimate
+                # Pass users don't add to regular queue pressure
+                if not agent.using_pass:
+                    target_node.pending_arrivals += 1
             else:
                 # Nothing worth doing — depart early
                 agent.state = "departed"
@@ -148,8 +179,14 @@ class Simulation:
                 agent.current_node = agent.target_node
                 target_node = self.park.nodes[agent.target_node]
                 if target_node.node_type == NodeType.ATTRACTION:
-                    target_node.add_to_queue(agent)
-                    target_node.pending_arrivals = max(0, target_node.pending_arrivals - 1)
+                    if agent.using_pass:
+                        # Skip the line — go to priority queue
+                        agent.consume_pass(agent.target_node, t)
+                        target_node.add_to_priority_queue(agent)
+                        agent.using_pass = False
+                    else:
+                        target_node.add_to_queue(agent)
+                        target_node.pending_arrivals = max(0, target_node.pending_arrivals - 1)
                     agent.state = "queued"
                 else:
                     agent.state = "deciding"
@@ -168,6 +205,10 @@ class Simulation:
     # ------------------------------------------------------------------
     # Run
     # ------------------------------------------------------------------
+
+    def run_summary_only(self) -> dict:
+        """Return summary stats without running (call after manual stepping)."""
+        return self.summary()
 
     def run(self) -> dict:
         """Run the full simulation from park open to close."""
@@ -238,14 +279,19 @@ class Simulation:
         for ride in ride_total_wait:
             avg_queue_by_ride[ride] = ride_total_wait[ride] / ride_wait_counts[ride]
 
+        total_passes_used = sum(a.passes_used for a in self.agents)
+
         results = {
             "num_agents": len(active_agents),
+            "total_park_happiness": np.sum(happinesses),
             "avg_happiness": np.mean(happinesses),
             "median_happiness": np.median(happinesses),
             "std_happiness": np.std(happinesses),
             "avg_wait": np.mean(waits),
             "avg_travel": np.mean(travels),
             "avg_rides": np.mean(rides),
+            "total_rides": int(np.sum(rides)),
+            "total_passes_used": total_passes_used,
             "most_congested": most_congested,
             "peak_queue": peak_queues.get(most_congested, 0),
             "avg_queue_by_ride": avg_queue_by_ride,
