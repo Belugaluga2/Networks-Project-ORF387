@@ -56,10 +56,10 @@ def build_graph_layout(park):
     return nodes, edges
 
 
-def run_and_capture(strategy: str, seed: int = 42):
+def run_and_capture(strategy: str, behavior: str = "rational", seed: int = 42):
     """Run a simulation and capture snapshots + summary."""
     park = build_epic_universe()
-    sim = Simulation(park, dt=1.0, seed=seed, pass_strategy=strategy)
+    sim = Simulation(park, dt=1.0, seed=seed, pass_strategy=strategy, behavior_type=behavior)
     sim.generate_agents()
 
     snapshots = []
@@ -117,32 +117,51 @@ def export_visualization_data(output_path: str = "viz_data.json"):
     park = build_epic_universe()
     nodes, edges = build_graph_layout(park)
 
-    strategies = ["none", "preselect", "preselect_timed", "dynamic"]
-    labels = {"none": "No Passes (Baseline)", "preselect": "Preselect (Anytime)",
-              "preselect_timed": "Preselect (Timed Slots)", "dynamic": "Dynamic (On-Demand)"}
+    pass_strategies = ["none", "preselect", "preselect_timed", "dynamic"]
+    pass_labels = {
+        "none": "No Passes (Baseline)",
+        "preselect": "Preselect (Anytime)",
+        "preselect_timed": "Preselect (Timed Slots)",
+        "dynamic": "Dynamic (On-Demand)",
+    }
+    behaviors = {
+        "rational": "Perfectly Rational",
+        "fatigue": "Direction Change Fatigue",
+        "info_restricted": "Information Restrictions",
+        "proximity_bias": "Proximity Bias",
+    }
 
     all_strategies = {}
-    for strategy in strategies:
-        print(f"\n  Running: {labels[strategy]}")
-        snapshots, summary = run_and_capture(strategy)
-        all_strategies[strategy] = {
-            "label": labels[strategy],
-            "snapshots": snapshots,
-            "summary": summary,
-        }
+    total = len(pass_strategies) * len(behaviors)
+    count = 0
+    for strategy in pass_strategies:
+        for behavior in behaviors:
+            count += 1
+            key = f"{strategy}_{behavior}"
+            label = f"{pass_labels[strategy]} + {behaviors[behavior]}"
+            print(f"\n  [{count}/{total}] Running: {label}")
+            snapshots, summary = run_and_capture(strategy, behavior)
+            all_strategies[key] = {
+                "label": label,
+                "snapshots": snapshots,
+                "summary": summary,
+            }
 
     output = {
         "park_name": "Epic Universe",
         "nodes": nodes,
         "edges": edges,
         "strategies": all_strategies,
+        "pass_strategies": pass_strategies,
+        "pass_labels": pass_labels,
+        "behaviors": behaviors,
     }
 
     with open(output_path, "w") as f:
         json.dump(output, f)
 
     size_mb = len(json.dumps(output)) / 1024 / 1024
-    print(f"\nExported {len(strategies)} strategies to {output_path} ({size_mb:.1f} MB)")
+    print(f"\nExported {total} combinations to {output_path} ({size_mb:.1f} MB)")
 
 
 if __name__ == "__main__":

@@ -12,13 +12,18 @@ class Simulation:
     """Discrete-time simulation of agents navigating a theme park network."""
 
     def __init__(self, park: Park, dt: float = 1.0, seed: int = 42,
-                 pass_strategy: str = "none"):
+                 pass_strategy: str = "none", behavior_type: str = "rational"):
         self.park = park
         self.dt = dt                    # time step in minutes
         self.rng = np.random.default_rng(seed)
         self.current_time: float = PARK_OPEN
         self.agents: list[Agent] = []
         self.pass_strategy = pass_strategy  # "none", "preselect", "dynamic"
+        self.behavior_type = behavior_type  # "rational", "fatigue", "info_restricted", "proximity_bias"
+
+        # Shared wait-time board for info_restricted behavior (updated every 15 min)
+        self.stale_wait_times: dict[str, float] = {}
+        self.stale_last_updated: float = -999.0
 
         # History: one snapshot per timestep
         self.history: list[dict] = []
@@ -83,7 +88,8 @@ class Simulation:
         for attr in attractions:
             agent.preferences[attr.name] = max(0.1, self.rng.normal(1.0, 0.3))
 
-        # Assign pass strategy
+        # Assign behavior type and pass strategy
+        agent.behavior_type = self.behavior_type
         agent.pass_strategy = self.pass_strategy
         if self.pass_strategy == "preselect":
             agent.assign_preselected_passes(self.park)
@@ -137,12 +143,19 @@ class Simulation:
                 agent.state = "departed"
 
         # Phase 4: Decisions — sequential best-response (anti-herding)
+        # Update shared wait-time board every 15 min (consumed by info_restricted agents)
+        if (t - self.stale_last_updated) >= 15:
+            for node in self.park.get_attractions():
+                self.stale_wait_times[node.name] = node.current_wait_time
+            self.stale_last_updated = t
+
         # Shuffle deciding agents; each sees updated queue state from prior decisions
         deciding = [a for a in self.agents if a.state == "deciding"]
         self.rng.shuffle(deciding)
 
         for agent in deciding:
-            best = agent.choose_next_attraction(self.park, t)
+            stale = self.stale_wait_times if agent.behavior_type == "info_restricted" else None
+            best = agent.choose_next_attraction(self.park, t, stale_queues=stale)
             if best is not None:
                 travel = self.park.travel_time(agent.current_node, best)
                 agent.target_node = best

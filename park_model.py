@@ -3,6 +3,7 @@ Theme Park Network Congestion Game — Data Model
 Classes: Node, Edge, Park, Agent
 Builder: build_epic_universe()
 """
+from __future__ import annotations
 
 from enum import Enum
 import heapq
@@ -228,6 +229,10 @@ class Agent:
         # Per-agent preference multipliers (set during generation)
         self.preferences: dict[str, float] = {}
 
+        # Behavior type: "rational", "fatigue", "info_restricted", "proximity_bias"
+        self.behavior_type: str = "rational"
+        self.last_target: str | None = None  # for fatigue behavior
+
         # Skip-the-line passes
         self.pass_strategy: str = "none"  # "none", "preselect", "dynamic", "preselect_timed"
         self.preselect_passes: list[str] = []  # ride names (Strategy 1)
@@ -344,11 +349,13 @@ class Agent:
             })
 
     def utility(self, attraction: Node, park: Park, current_time: float,
-                distances: dict[str, float] | None = None) -> float:
+                distances: dict[str, float] | None = None,
+                stale_queues: dict[str, float] | None = None) -> float:
         """U(a) = H(a) * pref * decay * reride_penalty / sqrt(1 + W + D)
 
         Always non-negative. Higher enjoyment and lower wait/travel = higher utility.
         If agent has a pass for this ride, W=0 in the formula.
+        stale_queues: pre-computed wait times from a shared board (info_restricted behavior).
         """
         import math
 
@@ -360,7 +367,12 @@ class Agent:
         pref = self.preferences.get(attraction.name, 1.0)
 
         H = attraction.happiness * pref * decay
-        W = attraction.current_wait_time
+
+        # info_restricted: use shared board snapshot instead of live wait
+        if stale_queues is not None:
+            W = stale_queues.get(attraction.name, 0.0)
+        else:
+            W = attraction.current_wait_time
 
         # Check if agent would skip the queue with a pass
         will_skip = False
@@ -370,7 +382,6 @@ class Agent:
             if self.has_active_timed_pass(attraction.name, current_time):
                 will_skip = True
             elif self.get_upcoming_timed_pass(attraction.name, current_time):
-                # Upcoming pass within 30 min — boost utility to encourage traveling there
                 will_skip = True
         elif self.would_use_dynamic_pass(W):
             will_skip = True
@@ -390,13 +401,19 @@ class Agent:
             return float('-inf')
 
         # Diminishing returns on re-rides: 1/(1 + 0.5n)
-        # 1st ride: 100%, 2nd: 67%, 3rd: 50%, 4th: 40%, 5th: 33%
         times_ridden = self.rides_completed.count(attraction.name)
         reride_penalty = 1.0 / (1.0 + 0.5 * times_ridden)
 
-        return H * reride_penalty / math.sqrt(1.0 + W + D)
+        u = H * reride_penalty / math.sqrt(1.0 + W + D)
 
-    def choose_next_attraction(self, park: Park, current_time: float) -> str | None:
+        # proximity_bias: every extra 30s of travel cuts utility 5%
+        if self.behavior_type == "proximity_bias" and D > 0:
+            u *= 0.95 ** (D / 0.5)
+
+        return u
+
+    def choose_next_attraction(self, park: Park, current_time: float,
+                               stale_queues: dict[str, float] | None = None) -> str | None:
         """Pick the attraction with highest utility. Returns None if nothing is worth it."""
         best_name = None
         best_util = 0.0  # threshold: only go if utility is positive
@@ -405,11 +422,21 @@ class Agent:
         distances = park.shortest_distances_from(self.current_node)
 
         for attraction in park.get_attractions():
-            u = self.utility(attraction, park, current_time, distances)
+            u = self.utility(attraction, park, current_time, distances, stale_queues)
             if u > best_util:
                 best_util = u
                 best_name = attraction.name
 
+        # fatigue: require 5% improvement over last committed target to switch
+        if self.behavior_type == "fatigue" and self.last_target is not None and best_name != self.last_target:
+            last_node = park.nodes.get(self.last_target)
+            if last_node is not None:
+                u_last = self.utility(last_node, park, current_time, distances, stale_queues)
+                if u_last > 0 and best_util <= 1.05 * u_last:
+                    best_name = self.last_target
+                    best_util = u_last
+
+        self.last_target = best_name
         return best_name
 
     def __repr__(self):
