@@ -406,9 +406,9 @@ class Agent:
 
         u = H * reride_penalty / math.sqrt(1.0 + W + D)
 
-        # proximity_bias: every extra 30s of travel cuts utility 5%
+        # proximity_bias: every extra 30s of travel cuts utility 2.5%
         if self.behavior_type == "proximity_bias" and D > 0:
-            u *= 0.95 ** (D / 0.5)
+            u *= 0.975 ** (D / 0.5)
 
         return u
 

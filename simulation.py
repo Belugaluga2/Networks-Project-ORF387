@@ -151,36 +151,36 @@ class Simulation:
 
         # Shuffle deciding agents; each sees updated queue state from prior decisions
         deciding = [a for a in self.agents if a.state == "deciding"]
-        self.rng.shuffle(deciding)
 
-        for agent in deciding:
-            stale = self.stale_wait_times if agent.behavior_type == "info_restricted" else None
-            best = agent.choose_next_attraction(self.park, t, stale_queues=stale)
-            if best is not None:
-                travel = self.park.travel_time(agent.current_node, best)
-                agent.target_node = best
-                agent.time_remaining = travel
-                agent.state = "traveling"
+        if self.behavior_type == "max_utility":
+            self._assign_agents_centrally(deciding, t)
+        else:
+            self.rng.shuffle(deciding)
+            for agent in deciding:
+                stale = self.stale_wait_times if agent.behavior_type == "info_restricted" else None
+                best = agent.choose_next_attraction(self.park, t, stale_queues=stale)
+                if best is not None:
+                    travel = self.park.travel_time(agent.current_node, best)
+                    agent.target_node = best
+                    agent.time_remaining = travel
+                    agent.state = "traveling"
 
-                # Determine if agent will use a pass on arrival
-                target_node = self.park.nodes[best]
-                W = target_node.current_wait_time
-                if agent.pass_strategy == "preselect" and best in agent.preselect_passes:
-                    agent.using_pass = True
-                elif agent.pass_strategy == "preselect_timed" and agent.has_active_timed_pass(best, t):
-                    agent.using_pass = True
-                elif agent.would_use_dynamic_pass(W):
-                    agent.using_pass = True
+                    # Determine if agent will use a pass on arrival
+                    target_node = self.park.nodes[best]
+                    W = target_node.current_wait_time
+                    if agent.pass_strategy == "preselect" and best in agent.preselect_passes:
+                        agent.using_pass = True
+                    elif agent.pass_strategy == "preselect_timed" and agent.has_active_timed_pass(best, t):
+                        agent.using_pass = True
+                    elif agent.would_use_dynamic_pass(W):
+                        agent.using_pass = True
+                    else:
+                        agent.using_pass = False
+
+                    if not agent.using_pass:
+                        target_node.pending_arrivals += 1
                 else:
-                    agent.using_pass = False
-
-                # Signal commitment so next agent sees updated wait estimate
-                # Pass users don't add to regular queue pressure
-                if not agent.using_pass:
-                    target_node.pending_arrivals += 1
-            else:
-                # Nothing worth doing — depart early
-                agent.state = "departed"
+                    agent.state = "departed"
 
         # Phase 5: Travel updates — agents moving between nodes
         for agent in self.agents:
@@ -214,6 +214,73 @@ class Simulation:
 
         # Advance time
         self.current_time += self.dt
+
+    # ------------------------------------------------------------------
+    # Central planner assignment (max_utility behavior)
+    # ------------------------------------------------------------------
+
+    def _assign_agents_centrally(self, deciding: list, t: float) -> None:
+        """Social planner: assign agents in descending utility order so high-value
+        agent-ride pairs are locked in first. Each assignment updates pending_arrivals
+        live, so later agents see realistic queue pressure and self-select away from
+        congested rides — reducing herding compared to the Nash equilibrium."""
+        if not deciding:
+            return
+
+        attractions = self.park.get_attractions()
+
+        # Cache Dijkstra per unique source node (shared across agents at same location)
+        dist_cache: dict = {}
+        def get_dist(node_name):
+            if node_name not in dist_cache:
+                dist_cache[node_name] = self.park.shortest_distances_from(node_name)
+            return dist_cache[node_name]
+
+        # Score each agent by their single best possible utility (for priority ordering)
+        scored = []
+        for agent in deciding:
+            distances = get_dist(agent.current_node)
+            best_u = max(
+                (agent.utility(attr, self.park, t, distances) for attr in attractions),
+                default=0.0,
+            )
+            scored.append((best_u, agent))
+
+        # Process highest-value agents first — they get first pick
+        scored.sort(key=lambda x: -x[0])
+
+        for _, agent in scored:
+            # Re-evaluate with live pending_arrivals reflecting prior assignments this step
+            distances = get_dist(agent.current_node)
+            best_ride, best_u = None, 0.0
+            for attr in attractions:
+                u = agent.utility(attr, self.park, t, distances)
+                if u > best_u:
+                    best_u = u
+                    best_ride = attr.name
+
+            if best_ride is None:
+                agent.state = "departed"
+                continue
+
+            travel = self.park.travel_time(agent.current_node, best_ride)
+            agent.target_node = best_ride
+            agent.time_remaining = travel
+            agent.state = "traveling"
+
+            target_node = self.park.nodes[best_ride]
+            W = target_node.current_wait_time
+            if agent.pass_strategy == "preselect" and best_ride in agent.preselect_passes:
+                agent.using_pass = True
+            elif agent.pass_strategy == "preselect_timed" and agent.has_active_timed_pass(best_ride, t):
+                agent.using_pass = True
+            elif agent.would_use_dynamic_pass(W):
+                agent.using_pass = True
+            else:
+                agent.using_pass = False
+
+            if not agent.using_pass:
+                target_node.pending_arrivals += 1
 
     # ------------------------------------------------------------------
     # Run
