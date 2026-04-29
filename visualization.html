@@ -480,12 +480,15 @@ function drawHistogram() {
   const maxH = Math.max(1, happiness[Math.min(happiness.length - 1, Math.floor(happiness.length * 0.99))]);
   const binWidth = maxH / numBins;
 
-  // Bin (split by pass-holder when express)
+  // Bin (split by pass-holder when express). Skip agents above the 99th-percentile
+  // cutoff so the rightmost bar reflects only its true range, not the whole tail.
   const binsHolder = new Array(numBins).fill(0);
   const binsNon = new Array(numBins).fill(0);
+  let clippedCount = 0;
   for (const a of filtered) {
-    const idx = Math.min(numBins - 1, Math.floor(a.happiness / binWidth));
     if (a.happiness < 0) continue;
+    if (a.happiness > maxH) { clippedCount++; continue; }
+    const idx = Math.min(numBins - 1, Math.floor(a.happiness / binWidth));
     if (isExpress && a.pass_holder) binsHolder[idx]++;
     else binsNon[idx]++;
   }
@@ -551,6 +554,9 @@ function drawHistogram() {
   histCtx.restore();
 
   // Footer stats
+  const clipNote = clippedCount > 0
+    ? ` | <span style="color:#888;">top 1% (>${maxH.toFixed(0)}) clipped from chart: ${clippedCount.toLocaleString()}</span>`
+    : "";
   if (isExpress) {
     legend.innerHTML =
       `<span><span class="swatch" style="background:${HIST_COLOR_HOLDER}"></span>Pass Holders</span>` +
@@ -563,11 +569,11 @@ function drawHistogram() {
     footer.innerHTML = `<b>${filtered.length.toLocaleString()}</b> agents | ` +
       `Pass Holders avg = <b>${avgH.toFixed(1)}</b> (n=${holders.length.toLocaleString()}) | ` +
       `Non-Holders avg = <b>${avgN.toFixed(1)}</b> (n=${nons.length.toLocaleString()}) | ` +
-      `gap = <b>${ratio.toFixed(2)}×</b>`;
+      `gap = <b>${ratio.toFixed(2)}×</b>${clipNote}`;
   } else {
     legend.innerHTML = `<span><span class="swatch" style="background:${HIST_COLOR_DEFAULT}"></span>All park-goers</span>`;
     const avg = filtered.reduce((s, a) => s + a.happiness, 0) / filtered.length;
-    footer.innerHTML = `<b>${filtered.length.toLocaleString()}</b> agents | avg happiness = <b>${avg.toFixed(2)}</b> | range shown 0–${maxH.toFixed(0)} (99th pct)`;
+    footer.innerHTML = `<b>${filtered.length.toLocaleString()}</b> agents | avg happiness = <b>${avg.toFixed(2)}</b> | range shown 0–${maxH.toFixed(0)}${clipNote}`;
   }
 }
 
