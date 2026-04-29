@@ -7,7 +7,18 @@
 * { margin: 0; padding: 0; box-sizing: border-box; }
 body { background: #1a1a2e; color: #eee; font-family: 'Segoe UI', sans-serif; overflow: hidden; }
 #container { display: flex; height: 100vh; }
-#canvas-wrap { flex: 1; position: relative; }
+#main-col { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+#canvas-wrap { flex: 3; position: relative; min-height: 0; }
+#hist-wrap { flex: 2; position: relative; min-height: 0; background: #16213e; border-top: 1px solid #2a2a4e; padding: 8px 12px 12px; display: flex; flex-direction: column; }
+#hist-header { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; font-size: 12px; color: #aaa; margin-bottom: 6px; }
+#hist-header .group { display: flex; align-items: center; gap: 6px; }
+#hist-header input[type="number"] { width: 60px; background: #1a1a2e; color: #eee; border: 1px solid #444; border-radius: 3px; padding: 2px 4px; font-size: 11px; }
+#hist-header select { background: #0f3460; color: #eee; border: 1px solid #444; border-radius: 3px; padding: 2px 4px; font-size: 11px; }
+#hist-header .legend { margin-left: auto; display: flex; gap: 10px; font-size: 11px; }
+#hist-header .legend .swatch { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 4px; vertical-align: middle; }
+#hist-canvas-wrap { flex: 1; position: relative; min-height: 0; }
+#hist-footer { font-size: 11px; color: #aaa; margin-top: 4px; }
+#hist-footer b { color: #4ecdc4; }
 canvas { display: block; width: 100%; height: 100%; }
 #sidebar { width: 320px; background: #16213e; padding: 16px; overflow-y: auto; }
 #sidebar h2 { color: #e94560; margin-bottom: 12px; font-size: 18px; }
@@ -16,8 +27,16 @@ canvas { display: block; width: 100%; height: 100%; }
 #time-slider { width: 100%; }
 #play-btn { background: #e94560; border: none; color: white; padding: 8px 20px; cursor: pointer; border-radius: 4px; font-size: 14px; margin-right: 8px; }
 #play-btn:hover { background: #c7334e; }
-#speed-select, #strategy-select, #behavior-select { background: #0f3460; color: #eee; border: 1px solid #444; padding: 4px 8px; border-radius: 4px; font-size: 13px; }
-#strategy-select, #behavior-select { width: 100%; margin-top: 4px; }
+#speed-select, #strategy-select { background: #0f3460; color: #eee; border: 1px solid #444; padding: 4px 8px; border-radius: 4px; font-size: 13px; }
+#strategy-select { width: 100%; margin-top: 4px; }
+#behavior-checkboxes { background: #0f3460; border: 1px solid #444; border-radius: 4px; padding: 6px 8px; margin-top: 4px; }
+#behavior-checkboxes label { display: flex; align-items: center; margin: 4px 0; font-size: 12px; color: #eee; cursor: pointer; }
+#behavior-checkboxes input[type="checkbox"] { margin-right: 6px; }
+#run-btn { background: #4ecdc4; border: none; color: #0f3460; padding: 8px 14px; cursor: pointer; border-radius: 4px; font-size: 13px; font-weight: bold; margin-top: 8px; width: 100%; }
+#run-btn:hover { background: #6fe0d8; }
+#run-btn:disabled { background: #555; color: #999; cursor: not-allowed; }
+#sim-status { font-size: 11px; color: #aaa; margin-top: 6px; min-height: 14px; }
+#dirty-indicator { color: #ffe66d; }
 #clock { font-size: 32px; font-weight: bold; color: #e94560; text-align: center; margin: 10px 0; }
 #stats { margin: 12px 0; }
 #stats div { padding: 4px 0; font-size: 13px; border-bottom: 1px solid #1a1a2e; }
@@ -44,15 +63,56 @@ canvas { display: block; width: 100%; height: 100%; }
 <body>
 <div id="loading">Loading simulation data...</div>
 <div id="container" style="display:none;">
-  <div id="canvas-wrap"><canvas id="canvas"></canvas></div>
+  <div id="main-col">
+    <div id="canvas-wrap"><canvas id="canvas"></canvas></div>
+    <div id="hist-wrap">
+      <div id="hist-header">
+        <div class="group">
+          <span>Arrival window:</span>
+          <input type="number" id="hist-arr-min" value="0" min="0" max="720" step="5">
+          <span>–</span>
+          <input type="number" id="hist-arr-max" value="720" min="0" max="720" step="5">
+          <span>min</span>
+        </div>
+        <div class="group">
+          <span>Bins:</span>
+          <select id="hist-bins"><option>10</option><option>20</option><option selected>30</option><option>50</option></select>
+        </div>
+        <div class="legend" id="hist-legend"></div>
+      </div>
+      <div id="hist-canvas-wrap"><canvas id="hist-canvas"></canvas></div>
+      <div id="hist-footer">Run a simulation to populate the utility distribution.</div>
+    </div>
+  </div>
   <div id="sidebar">
     <h2>Epic Universe Simulation</h2>
     <div id="clock">9:00 AM</div>
     <div id="controls">
       <label>Virtual Queue Strategy</label>
       <select id="strategy-select"></select>
-      <label style="margin-top:8px;">People Actions</label>
-      <select id="behavior-select"></select>
+      <div id="express-pct-row" style="display:none; margin-top:6px; font-size:12px; color:#aaa;">
+        Express Pass holders:
+        <input type="number" id="express-pct-input" value="30" min="0" max="100" step="1"
+               style="margin-left:6px; width:70px; background:#1a1a2e; color:#eee; border:1px solid #444; border-radius:3px; padding:2px 4px; font-size:12px;">
+        % of guests
+      </div>
+      <label style="margin-top:8px;">People Actions (check any combination)</label>
+      <div id="behavior-checkboxes"></div>
+      <label style="margin-top:8px;">Randomness</label>
+      <div id="seed-mode" style="background:#0f3460; border:1px solid #444; border-radius:4px; padding:6px 8px; margin-top:4px; font-size:12px;">
+        <label style="display:flex;align-items:center;margin:4px 0;cursor:pointer;">
+          <input type="radio" name="seed-mode" value="reproducible" checked style="margin-right:6px;">
+          Reproducible seed:
+          <input type="number" id="seed-input" value="42" min="0" step="1"
+                 style="margin-left:6px; width:90px; background:#1a1a2e; color:#eee; border:1px solid #444; border-radius:3px; padding:2px 4px; font-size:12px;">
+        </label>
+        <label style="display:flex;align-items:center;margin:4px 0;cursor:pointer;">
+          <input type="radio" name="seed-mode" value="random" style="margin-right:6px;">
+          Random seed (new each run)
+        </label>
+      </div>
+      <button id="run-btn">Run Simulation</button>
+      <div id="sim-status"></div>
       <div style="margin-top:8px; margin-bottom:8px;">
         <button id="play-btn">Play</button>
         <select id="speed-select">
@@ -105,9 +165,10 @@ const LAND_COLORS = {
   "Isle of Berk": "#22c55e",
 };
 
-let data = null;
-let currentStrategy = "none";
-let currentBehavior = "rational";
+let parkData = null;          // static park layout {nodes, edges, pass_labels, behavior_labels}
+let resultCache = new Map();  // key = `${strategy}__${sortedBehaviors||"rational"}` -> {snapshots, summary, label}
+let activeKey = null;         // key into resultCache for the result currently rendered
+let baselineSummary = null;   // first sim run; used for "vs Baseline" %
 let currentFrame = 0;
 let playing = false;
 let speed = 5;
@@ -116,17 +177,69 @@ let lastTime = 0;
 
 const canvas = document.getElementById("canvas");
 const ctx = canvas.getContext("2d");
+const histCanvas = document.getElementById("hist-canvas");
+const histCtx = histCanvas.getContext("2d");
 
-async function loadData() {
+const HIST_COLOR_DEFAULT = "#4ecdc4";
+const HIST_COLOR_HOLDER  = "#ffe66d";  // Express Pass holders (paying)
+const HIST_COLOR_NON     = "#4ecdc4";  // non-holders
+
+function buildKey(strategy, behaviors, seed, expressPct) {
+  const sorted = [...behaviors].sort().join("+") || "rational";
+  // express_pct only matters when strategy === "express", but include it
+  // unconditionally so cache lookups are consistent.
+  const exp = strategy === "express" ? `__exp${expressPct}` : "";
+  return `${strategy}__${sorted}${exp}__seed${seed}`;
+}
+
+function getSelectedStrategy() {
+  return document.getElementById("strategy-select").value;
+}
+
+function getExpressPct() {
+  // Read the integer percentage from the UI (0-100), return as 0..1 fraction.
+  const raw = document.getElementById("express-pct-input").value;
+  const n = parseInt(raw, 10);
+  if (!Number.isFinite(n)) return 0.3;
+  return Math.min(100, Math.max(0, n)) / 100;
+}
+
+function updateExpressVisibility() {
+  const show = getSelectedStrategy() === "express";
+  document.getElementById("express-pct-row").style.display = show ? "block" : "none";
+}
+
+function getSelectedBehaviors() {
+  return Array.from(document.querySelectorAll("#behavior-checkboxes input[type=checkbox]:checked"))
+              .map(cb => cb.value);
+}
+
+function getSeedMode() {
+  const checked = document.querySelector('input[name="seed-mode"]:checked');
+  return checked ? checked.value : "reproducible";
+}
+
+function getFixedSeed() {
+  // Parse the user-entered seed; fall back to 42 if blank/invalid.
+  const raw = document.getElementById("seed-input").value;
+  const n = parseInt(raw, 10);
+  return Number.isFinite(n) && n >= 0 ? n : 42;
+}
+
+function activeResult() {
+  return activeKey ? resultCache.get(activeKey) : null;
+}
+
+async function loadParkLayout() {
   try {
-    const resp = await fetch("viz_data.json?v=" + Date.now());
-    if (!resp.ok) throw new Error("viz_data.json not found");
-    data = await resp.json();
+    const resp = await fetch("/api/park");
+    if (!resp.ok) throw new Error("park layout fetch failed");
+    parkData = await resp.json();
     init();
   } catch (e) {
     document.getElementById("loading").innerHTML =
-      'Could not load viz_data.json.<br><br>' +
-      '<span style="font-size:14px;color:#aaa;">Run <code style="color:#4ecdc4;">python export_viz.py</code> first to generate the data file.</span>';
+      'Could not reach the simulation server.<br><br>' +
+      '<span style="font-size:14px;color:#aaa;">Start it with <code style="color:#4ecdc4;">python server.py</code> and reload.</span>';
   }
 }
 
@@ -137,39 +250,32 @@ function init() {
   resizeCanvas();
   window.addEventListener("resize", resizeCanvas);
 
-  // Populate strategy dropdown from pass_labels (or fall back to deriving from keys)
   const stratSelect = document.getElementById("strategy-select");
-  const passLabels = data.pass_labels || {"none": "No Passes (Baseline)", "preselect": "Preselect (Anytime)", "preselect_timed": "Preselect (Timed Slots)", "dynamic": "Dynamic (On-Demand)"};
-  for (const [key, label] of Object.entries(passLabels)) {
+  for (const [key, label] of Object.entries(parkData.pass_labels)) {
     const opt = document.createElement("option");
     opt.value = key;
     opt.textContent = label;
     stratSelect.appendChild(opt);
   }
-  stratSelect.addEventListener("change", (e) => {
-    currentStrategy = e.target.value;
-    currentFrame = 0;
-    document.getElementById("time-slider").value = 0;
-    updateSummary();
-    render();
-  });
+  stratSelect.addEventListener("change", () => { updateExpressVisibility(); markDirty(); });
+  document.getElementById("express-pct-input").addEventListener("input", markDirty);
+  updateExpressVisibility();
 
-  // Populate behavior dropdown
-  const behaviorSelect = document.getElementById("behavior-select");
-  const behaviors = data.behaviors || {"rational": "Perfectly Rational", "fatigue": "Direction Change Fatigue", "info_restricted": "Information Restrictions", "proximity_bias": "Proximity Bias"};
-  for (const [key, label] of Object.entries(behaviors)) {
-    const opt = document.createElement("option");
-    opt.value = key;
-    opt.textContent = label;
-    behaviorSelect.appendChild(opt);
+  const checkboxesDiv = document.getElementById("behavior-checkboxes");
+  for (const [key, label] of Object.entries(parkData.behavior_labels)) {
+    const id = `cb-${key}`;
+    const wrap = document.createElement("label");
+    wrap.innerHTML = `<input type="checkbox" id="${id}" value="${key}"><span>${label}</span>`;
+    checkboxesDiv.appendChild(wrap);
   }
-  behaviorSelect.addEventListener("change", (e) => {
-    currentBehavior = e.target.value;
-    currentFrame = 0;
-    document.getElementById("time-slider").value = 0;
-    updateSummary();
-    render();
-  });
+  checkboxesDiv.addEventListener("change", markDirty);
+  document.querySelectorAll('input[name="seed-mode"]').forEach(r => r.addEventListener("change", markDirty));
+  document.getElementById("seed-input").addEventListener("input", markDirty);
+
+  document.getElementById("run-btn").addEventListener("click", runSimulation);
+  document.getElementById("hist-arr-min").addEventListener("input", drawHistogram);
+  document.getElementById("hist-arr-max").addEventListener("input", drawHistogram);
+  document.getElementById("hist-bins").addEventListener("change", drawHistogram);
 
   const slider = document.getElementById("time-slider");
   slider.addEventListener("input", (e) => {
@@ -182,8 +288,7 @@ function init() {
     speed = parseInt(e.target.value);
   });
 
-  // Build queue bars
-  const attractions = Object.entries(data.nodes)
+  const attractions = Object.entries(parkData.nodes)
     .filter(([_, n]) => n.type === "attraction")
     .sort((a, b) => b[1].happiness - a[1].happiness);
 
@@ -199,24 +304,100 @@ function init() {
       </div>`;
   }
 
-  // Sync JS state with actual dropdown values (browser may restore previous selections)
-  currentStrategy = stratSelect.value;
-  currentBehavior = behaviorSelect.value;
-
-  // Set initial slider max
-  const key0 = currentStrategy + "_" + currentBehavior;
-  const snapshots = data.strategies[key0] ? data.strategies[key0].snapshots : Object.values(data.strategies)[0].snapshots;
-  slider.max = snapshots.length - 1;
-
-  updateSummary();
+  setStatus("No simulation yet — click Run Simulation to begin.");
   render();
 }
 
+function markDirty() {
+  // For reproducible seed, a matching cached result can be replayed instantly.
+  // For random seed, every click is a new run by definition — never auto-load cache.
+  if (getSeedMode() === "reproducible") {
+    const seed = getFixedSeed();
+    const expressPct = Math.round(getExpressPct() * 100);
+    const key = buildKey(getSelectedStrategy(), getSelectedBehaviors(), seed, expressPct);
+    if (resultCache.has(key)) {
+      activeKey = key;
+      currentFrame = 0;
+      document.getElementById("time-slider").value = 0;
+      setStatus(`Showing cached: ${resultCache.get(key).label} (seed ${seed})`);
+      updateSummary();
+      render();
+      drawHistogram();
+      return;
+    }
+  }
+  setStatus(`<span id="dirty-indicator">Selection changed — click Run Simulation to compute.</span>`);
+}
+
+function setStatus(html) {
+  document.getElementById("sim-status").innerHTML = html;
+}
+
+async function runSimulation() {
+  const strategy = getSelectedStrategy();
+  const behaviors = getSelectedBehaviors();
+  const seedMode = getSeedMode();
+  const expressFrac = getExpressPct();
+  const expressPctInt = Math.round(expressFrac * 100);
+
+  // Reproducible mode can hit the cache directly; random mode always re-runs.
+  if (seedMode === "reproducible") {
+    const seed = getFixedSeed();
+    const cachedKey = buildKey(strategy, behaviors, seed, expressPctInt);
+    if (resultCache.has(cachedKey)) {
+      activeKey = cachedKey;
+      currentFrame = 0;
+      document.getElementById("time-slider").value = 0;
+      setStatus(`Showing cached: ${resultCache.get(cachedKey).label} (seed ${seed})`);
+      updateSummary();
+      render();
+      drawHistogram();
+      return;
+    }
+  }
+
+  const btn = document.getElementById("run-btn");
+  btn.disabled = true;
+  btn.textContent = "Running…";
+  const t0 = performance.now();
+  setStatus("Running simulation (~10–15s)…");
+  try {
+    const payload = {pass_strategy: strategy, behaviors: behaviors, express_pct: expressFrac};
+    if (seedMode === "reproducible") payload.seed = getFixedSeed();
+    const resp = await fetch("/api/simulate", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify(payload),
+    });
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({error: resp.statusText}));
+      throw new Error(err.error || "simulation failed");
+    }
+    const result = await resp.json();
+    const resultPctInt = Math.round((result.express_pct ?? expressFrac) * 100);
+    const key = buildKey(strategy, behaviors, result.seed, resultPctInt);
+    resultCache.set(key, result);
+    if (baselineSummary === null) baselineSummary = result.summary;
+    activeKey = key;
+    currentFrame = 0;
+    document.getElementById("time-slider").value = 0;
+    const elapsed = ((performance.now() - t0) / 1000).toFixed(1);
+    setStatus(`Done in ${elapsed}s — ${result.label} (seed ${result.seed})`);
+    updateSummary();
+    render();
+    drawHistogram();
+  } catch (e) {
+    setStatus(`<span style="color:#ef4444;">Error: ${e.message}</span>`);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "Run Simulation";
+  }
+}
+
 function updateSummary() {
-  const key = currentStrategy + "_" + currentBehavior;
-  const strat = data.strategies[key];
-  if (!strat) return;
-  const s = strat.summary;
+  const result = activeResult();
+  if (!result) return;
+  const s = result.summary;
   if (!s) return;
 
   document.getElementById("sum-happiness").textContent = Math.round(s.total_park_happiness).toLocaleString();
@@ -226,10 +407,9 @@ function updateSummary() {
   document.getElementById("sum-passes").textContent = (s.total_passes_used || 0).toLocaleString();
   document.getElementById("sum-peak").textContent = (s.peak_queue || 0).toLocaleString();
 
-  // % vs true baseline (no passes + rational behavior)
-  const baseline = data.strategies["none_rational"];
-  if (baseline && baseline.summary && key !== "none_rational") {
-    const base = baseline.summary.total_park_happiness;
+  // % vs the very first run (treated as baseline)
+  if (baselineSummary && baselineSummary !== s) {
+    const base = baselineSummary.total_park_happiness;
     const pct = ((s.total_park_happiness - base) / base * 100);
     document.getElementById("sum-pct").textContent = (pct >= 0 ? "+" : "") + pct.toFixed(1) + "%";
     document.getElementById("sum-pct").style.color = pct >= 0 ? "#4ecdc4" : "#ef4444";
@@ -238,9 +418,9 @@ function updateSummary() {
     document.getElementById("sum-pct").style.color = "#aaa";
   }
 
-  // Update slider max for this strategy
+  // Update slider max for this result
   const slider = document.getElementById("time-slider");
-  slider.max = strat.snapshots.length - 1;
+  slider.max = activeResult().snapshots.length - 1;
 }
 
 function css(name) { return name.replace(/[^a-zA-Z0-9]/g, "_"); }
@@ -252,11 +432,147 @@ function resizeCanvas() {
   canvas.style.width = wrap.clientWidth + "px";
   canvas.style.height = wrap.clientHeight + "px";
   ctx.setTransform(window.devicePixelRatio, 0, 0, window.devicePixelRatio, 0, 0);
-  if (data) render();
+  resizeHistCanvas();
+  if (parkData) render();
+}
+
+function resizeHistCanvas() {
+  const wrap = document.getElementById("hist-canvas-wrap");
+  if (!wrap) return;
+  histCanvas.width = wrap.clientWidth * window.devicePixelRatio;
+  histCanvas.height = wrap.clientHeight * window.devicePixelRatio;
+  histCanvas.style.width = wrap.clientWidth + "px";
+  histCanvas.style.height = wrap.clientHeight + "px";
+  histCtx.setTransform(window.devicePixelRatio, 0, 0, window.devicePixelRatio, 0, 0);
+  drawHistogram();
+}
+
+function drawHistogram() {
+  if (!histCtx) return;
+  const w = histCanvas.width / window.devicePixelRatio;
+  const h = histCanvas.height / window.devicePixelRatio;
+  histCtx.clearRect(0, 0, w, h);
+
+  const result = activeResult();
+  const footer = document.getElementById("hist-footer");
+  const legend = document.getElementById("hist-legend");
+  legend.innerHTML = "";
+  if (!result || !result.agents || result.agents.length === 0) {
+    footer.innerHTML = "Run a simulation to populate the utility distribution.";
+    return;
+  }
+
+  // Filters
+  const arrMin = parseFloat(document.getElementById("hist-arr-min").value) || 0;
+  const arrMax = parseFloat(document.getElementById("hist-arr-max").value) || 720;
+  const numBins = parseInt(document.getElementById("hist-bins").value, 10) || 30;
+
+  const filtered = result.agents.filter(a => a.arrival >= arrMin && a.arrival <= arrMax);
+  if (filtered.length === 0) {
+    footer.innerHTML = `<b>0</b> agents match the current filter.`;
+    return;
+  }
+
+  const isExpress = result.pass_strategy === "express";
+
+  // Compute happiness range — use 99th percentile to clip outliers
+  const happiness = filtered.map(a => a.happiness).sort((a, b) => a - b);
+  const maxH = Math.max(1, happiness[Math.min(happiness.length - 1, Math.floor(happiness.length * 0.99))]);
+  const binWidth = maxH / numBins;
+
+  // Bin (split by pass-holder when express)
+  const binsHolder = new Array(numBins).fill(0);
+  const binsNon = new Array(numBins).fill(0);
+  for (const a of filtered) {
+    const idx = Math.min(numBins - 1, Math.floor(a.happiness / binWidth));
+    if (a.happiness < 0) continue;
+    if (isExpress && a.pass_holder) binsHolder[idx]++;
+    else binsNon[idx]++;
+  }
+  const binsTotal = binsHolder.map((v, i) => v + binsNon[i]);
+  const yMax = Math.max(1, ...binsTotal);
+
+  // Plot area
+  const padL = 50, padR = 12, padT = 10, padB = 28;
+  const plotW = w - padL - padR;
+  const plotH = h - padT - padB;
+
+  // Gridlines + Y-axis labels
+  histCtx.strokeStyle = "rgba(255,255,255,0.06)";
+  histCtx.lineWidth = 1;
+  histCtx.fillStyle = "#888";
+  histCtx.font = "10px 'Segoe UI', sans-serif";
+  histCtx.textAlign = "right";
+  histCtx.textBaseline = "middle";
+  for (let g = 0; g <= 4; g++) {
+    const y = padT + plotH - (g / 4) * plotH;
+    histCtx.beginPath();
+    histCtx.moveTo(padL, y);
+    histCtx.lineTo(padL + plotW, y);
+    histCtx.stroke();
+    histCtx.fillText(Math.round(yMax * g / 4).toLocaleString(), padL - 6, y);
+  }
+
+  // Bars
+  const barW = plotW / numBins;
+  for (let i = 0; i < numBins; i++) {
+    const x = padL + i * barW;
+    const totalH = (binsTotal[i] / yMax) * plotH;
+    const holderH = (binsHolder[i] / yMax) * plotH;
+    const nonH = totalH - holderH;
+    let yCursor = padT + plotH;
+    if (nonH > 0) {
+      histCtx.fillStyle = HIST_COLOR_NON;
+      histCtx.fillRect(x + 0.5, yCursor - nonH, barW - 1, nonH);
+      yCursor -= nonH;
+    }
+    if (isExpress && holderH > 0) {
+      histCtx.fillStyle = HIST_COLOR_HOLDER;
+      histCtx.fillRect(x + 0.5, yCursor - holderH, barW - 1, holderH);
+    }
+  }
+
+  // X-axis labels (5 ticks)
+  histCtx.fillStyle = "#aaa";
+  histCtx.textAlign = "center";
+  histCtx.textBaseline = "top";
+  for (let t = 0; t <= 4; t++) {
+    const x = padL + (t / 4) * plotW;
+    const val = (maxH * t / 4).toFixed(0);
+    histCtx.fillText(val, x, padT + plotH + 4);
+  }
+  histCtx.textAlign = "right";
+  histCtx.fillText("Total Happiness →", padL + plotW, padT + plotH + 16);
+  histCtx.save();
+  histCtx.translate(12, padT + plotH / 2);
+  histCtx.rotate(-Math.PI / 2);
+  histCtx.textAlign = "center";
+  histCtx.fillText("# Park-goers", 0, 0);
+  histCtx.restore();
+
+  // Footer stats
+  if (isExpress) {
+    legend.innerHTML =
+      `<span><span class="swatch" style="background:${HIST_COLOR_HOLDER}"></span>Pass Holders</span>` +
+      `<span><span class="swatch" style="background:${HIST_COLOR_NON}"></span>Non-Holders</span>`;
+    const holders = filtered.filter(a => a.pass_holder);
+    const nons = filtered.filter(a => !a.pass_holder);
+    const avgH = holders.length ? (holders.reduce((s, a) => s + a.happiness, 0) / holders.length) : 0;
+    const avgN = nons.length ? (nons.reduce((s, a) => s + a.happiness, 0) / nons.length) : 0;
+    const ratio = avgN > 0 ? (avgH / avgN) : 0;
+    footer.innerHTML = `<b>${filtered.length.toLocaleString()}</b> agents | ` +
+      `Pass Holders avg = <b>${avgH.toFixed(1)}</b> (n=${holders.length.toLocaleString()}) | ` +
+      `Non-Holders avg = <b>${avgN.toFixed(1)}</b> (n=${nons.length.toLocaleString()}) | ` +
+      `gap = <b>${ratio.toFixed(2)}×</b>`;
+  } else {
+    legend.innerHTML = `<span><span class="swatch" style="background:${HIST_COLOR_DEFAULT}"></span>All park-goers</span>`;
+    const avg = filtered.reduce((s, a) => s + a.happiness, 0) / filtered.length;
+    footer.innerHTML = `<b>${filtered.length.toLocaleString()}</b> agents | avg happiness = <b>${avg.toFixed(2)}</b> | range shown 0–${maxH.toFixed(0)} (99th pct)`;
+  }
 }
 
 function getNodePos(name) {
-  const n = data.nodes[name];
+  const n = parkData.nodes[name];
   const wrap = document.getElementById("canvas-wrap");
   const sx = wrap.clientWidth / 800;
   const sy = wrap.clientHeight / 600;
@@ -281,15 +597,13 @@ function animate() {
     if (elapsed > 1000 / (speed * 2)) {
       lastTime = now;
       currentFrame++;
-      const key = currentStrategy + "_" + currentBehavior;
-      const strat = data.strategies[key];
-      if (!strat) {
-        console.error("Missing strategy key:", key, "Available:", Object.keys(data.strategies).slice(0, 5));
+      const result = activeResult();
+      if (!result) {
         playing = false;
         document.getElementById("play-btn").textContent = "Play";
         return;
       }
-      if (currentFrame >= strat.snapshots.length) {
+      if (currentFrame >= result.snapshots.length) {
         currentFrame = 0;
       }
       document.getElementById("time-slider").value = currentFrame;
@@ -304,10 +618,9 @@ function animate() {
 }
 
 function render() {
-  const strat = data.strategies[currentStrategy + "_" + currentBehavior];
-  if (!strat) return;
-  const snap = strat.snapshots[currentFrame];
-  if (!snap) return;
+  if (!parkData) return;
+  const result = activeResult();
+  const snap = result ? result.snapshots[currentFrame] : null;
 
   const w = canvas.width / window.devicePixelRatio;
   const h = canvas.height / window.devicePixelRatio;
@@ -315,7 +628,7 @@ function render() {
   ctx.clearRect(0, 0, w, h);
 
   // Draw edges
-  for (const edge of data.edges) {
+  for (const edge of parkData.edges) {
     const from = getNodePos(edge.source);
     const to = getNodePos(edge.target);
     ctx.beginPath();
@@ -327,10 +640,10 @@ function render() {
   }
 
   // Draw traveling agents as moving dots on edges
-  if (snap.traveling_edges) {
+  if (snap && snap.traveling_edges) {
     for (const [key, count] of Object.entries(snap.traveling_edges)) {
       const [srcName, tgtName] = key.split("|");
-      if (!data.nodes[srcName] || !data.nodes[tgtName]) continue;
+      if (!parkData.nodes[srcName] || !parkData.nodes[tgtName]) continue;
       const from = getNodePos(srcName);
       const to = getNodePos(tgtName);
 
@@ -355,11 +668,11 @@ function render() {
   }
 
   // Draw nodes
-  for (const [name, node] of Object.entries(data.nodes)) {
+  for (const [name, node] of Object.entries(parkData.nodes)) {
     const pos = getNodePos(name);
     const isHub = node.type === "hub";
     const color = LAND_COLORS[node.area] || "#888";
-    const queueLen = snap.queue_lengths?.[name] || 0;
+    const queueLen = snap?.queue_lengths?.[name] || 0;
 
     if (isHub) {
       ctx.beginPath();
@@ -412,14 +725,15 @@ function render() {
   }
 
   // Update sidebar
-  document.getElementById("clock").textContent = snap.hour;
-  document.getElementById("stat-inpark").textContent = snap.total_in_park.toLocaleString();
-  document.getElementById("stat-queued").textContent = snap.total_queued.toLocaleString();
-  document.getElementById("stat-traveling").textContent = snap.total_traveling.toLocaleString();
+  document.getElementById("clock").textContent = snap ? snap.hour : "9:00 AM";
+  document.getElementById("stat-inpark").textContent = (snap?.total_in_park || 0).toLocaleString();
+  document.getElementById("stat-queued").textContent = (snap?.total_queued || 0).toLocaleString();
+  document.getElementById("stat-traveling").textContent = (snap?.total_traveling || 0).toLocaleString();
   document.getElementById("time-slider").value = currentFrame;
 
-  const maxQ = Math.max(1, ...Object.values(snap.queue_lengths || {}));
-  for (const [name, q] of Object.entries(snap.queue_lengths || {})) {
+  const queueLengths = snap?.queue_lengths || {};
+  const maxQ = Math.max(1, ...Object.values(queueLengths));
+  for (const [name, q] of Object.entries(queueLengths)) {
     const bar = document.getElementById(`qbar-${css(name)}`);
     const count = document.getElementById(`qcount-${css(name)}`);
     if (bar) bar.style.width = (q / maxQ * 100) + "%";
@@ -427,7 +741,7 @@ function render() {
   }
 }
 
-loadData();
+loadParkLayout();
 </script>
 </body>
 </html>

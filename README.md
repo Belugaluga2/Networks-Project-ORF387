@@ -125,6 +125,20 @@ python -m http.server 8000
 # Open http://localhost:8000/visualization.html
 ```
 
+## Pass Strategies
+
+The simulation supports five virtual-queue strategies, selectable from the visualization UI:
+
+| Strategy | Description |
+|---|---|
+| `none` | Baseline — no passes |
+| `preselect` | Each agent picks their top-3 rides by personal preference; passes are usable any time |
+| `preselect_timed` | Same top-3 picks, but each is bound to an assigned 30-minute time window (round-robin slot assignment, ≥30 min apart per agent) — Disney Lightning Lane Multi Pass model |
+| `dynamic` | 3 on-demand passes per agent; used when wait > 30 min |
+| `express` | Universal Orlando Express Pass model — pass holders skip the regular line **once per ride** for every ride in the park. The user specifies what fraction of guests hold the pass via the "Express Pass holders %" UI field. |
+
+**Modeling note:** Universal Orlando's real Express Pass excludes Dragon Racer's Rally (and a few headliners that change over time). For simplicity, this simulation lets Express Pass holders use the pass on every ride in the park, including Dragon Racer's Rally.
+
 ## Sample Results (20,000 agents)
 
 | Metric | Value |

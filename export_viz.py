@@ -56,58 +56,71 @@ def build_graph_layout(park):
     return nodes, edges
 
 
-def run_and_capture(strategy: str, behavior: str = "rational", seed: int = 42):
+def capture_snapshot(sim, park):
+    """Build a single visualization snapshot from current simulation state.
+
+    Iterates only the active state buckets (deciding/traveling/queued/resting)
+    rather than the full self.agents list, which would also traverse the
+    inactive and departed agents.
+    """
+    node_counts = {name: {"queued": 0, "deciding": 0, "riding": 0} for name in park.nodes}
+    traveling_edges: dict[str, int] = {}
+
+    total_queued = len(sim.bucket_queued)
+    total_traveling = len(sim.bucket_traveling)
+    total_in_park = (total_queued + total_traveling
+                     + len(sim.bucket_deciding) + len(sim.bucket_resting))
+
+    for agent in sim.bucket_queued:
+        if agent.target_node:
+            counts = node_counts.get(agent.target_node)
+            if counts is None:
+                counts = {"queued": 0, "deciding": 0, "riding": 0}
+                node_counts[agent.target_node] = counts
+            counts["queued"] += 1
+
+    for agent in sim.bucket_deciding:
+        if agent.current_node:
+            counts = node_counts.get(agent.current_node)
+            if counts is None:
+                counts = {"queued": 0, "deciding": 0, "riding": 0}
+                node_counts[agent.current_node] = counts
+            counts["deciding"] += 1
+
+    for agent in sim.bucket_traveling:
+        if agent.current_node and agent.target_node:
+            key = f"{agent.current_node}|{agent.target_node}"
+            traveling_edges[key] = traveling_edges.get(key, 0) + 1
+
+    queue_lengths = {}
+    for node in park.get_attractions():
+        queue_lengths[node.name] = len(node.queue)
+
+    return {
+        "time": round(sim.current_time, 1),
+        "hour": f"{9 + int(sim.current_time) // 60}:{int(sim.current_time) % 60:02d}",
+        "total_in_park": total_in_park,
+        "total_queued": total_queued,
+        "total_traveling": total_traveling,
+        "queue_lengths": queue_lengths,
+        "node_counts": node_counts,
+        "traveling_edges": traveling_edges,
+    }
+
+
+def run_and_capture(strategy: str, behaviors: list[str] | None = None, seed: int = 42):
     """Run a simulation and capture snapshots + summary."""
     park = build_epic_universe()
-    sim = Simulation(park, dt=1.0, seed=seed, pass_strategy=strategy, behavior_type=behavior)
+    sim = Simulation(park, dt=1.0, seed=seed, pass_strategy=strategy, behaviors=behaviors)
     sim.generate_agents()
 
     snapshots = []
     while sim.current_time <= PARK_CLOSE:
         sim.step()
-
-        node_counts = {}
-        for name in park.nodes:
-            node_counts[name] = {"queued": 0, "deciding": 0, "riding": 0}
-
-        traveling_edges = {}
-        total_in_park = 0
-        total_traveling = 0
-        total_queued = 0
-
-        for agent in sim.agents:
-            if agent.state in ("inactive", "departed"):
-                continue
-            total_in_park += 1
-            if agent.state == "queued" and agent.target_node:
-                node_counts.setdefault(agent.target_node, {"queued": 0, "deciding": 0, "riding": 0})
-                node_counts[agent.target_node]["queued"] += 1
-                total_queued += 1
-            elif agent.state == "deciding" and agent.current_node:
-                node_counts.setdefault(agent.current_node, {"queued": 0, "deciding": 0, "riding": 0})
-                node_counts[agent.current_node]["deciding"] += 1
-            elif agent.state == "traveling" and agent.current_node and agent.target_node:
-                key = f"{agent.current_node}|{agent.target_node}"
-                traveling_edges[key] = traveling_edges.get(key, 0) + 1
-                total_traveling += 1
-
-        queue_lengths = {}
-        for node in park.get_attractions():
-            queue_lengths[node.name] = len(node.queue)
-
-        snapshots.append({
-            "time": round(sim.current_time, 1),
-            "hour": f"{9 + int(sim.current_time) // 60}:{int(sim.current_time) % 60:02d}",
-            "total_in_park": total_in_park,
-            "total_queued": total_queued,
-            "total_traveling": total_traveling,
-            "queue_lengths": queue_lengths,
-            "node_counts": node_counts,
-            "traveling_edges": traveling_edges,
-        })
-
+        snap = capture_snapshot(sim, park)
+        snapshots.append(snap)
         if int(sim.current_time) % 60 == 0 and sim.current_time > 0:
-            print(f"    {snapshots[-1]['hour']} — {total_in_park} in park")
+            print(f"    {snap['hour']} — {snap['total_in_park']} in park")
 
     results = sim.run_summary_only()
     return snapshots, results
@@ -129,6 +142,7 @@ def export_visualization_data(output_path: str = "viz_data.json"):
         "fatigue": "Direction Change Fatigue",
         "info_restricted": "Information Restrictions",
         "proximity_bias": "Proximity Bias",
+        "decision_paralysis": "Decision Paralysis",
     }
 
     all_strategies = {}
@@ -140,7 +154,8 @@ def export_visualization_data(output_path: str = "viz_data.json"):
             key = f"{strategy}_{behavior}"
             label = f"{pass_labels[strategy]} + {behaviors[behavior]}"
             print(f"\n  [{count}/{total}] Running: {label}")
-            snapshots, summary = run_and_capture(strategy, behavior)
+            behaviors_arg = [] if behavior == "rational" else [behavior]
+            snapshots, summary = run_and_capture(strategy, behaviors_arg)
             all_strategies[key] = {
                 "label": label,
                 "snapshots": snapshots,

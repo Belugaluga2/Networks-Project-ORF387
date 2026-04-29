@@ -113,6 +113,9 @@ class Park:
         self.nodes: dict[str, Node] = {}
         self.edges: list[Edge] = []
         self.adj: dict[str, list[Edge]] = defaultdict(list)
+        # Caches populated lazily — graph is static after construction
+        self._all_distances: dict[str, dict[str, float]] | None = None
+        self._attractions_cache: list | None = None
 
     def add_node(self, node: Node) -> None:
         self.nodes[node.name] = node
@@ -125,7 +128,17 @@ class Park:
         self.adj[source_name].append(edge)
 
     def shortest_distances_from(self, source_name: str) -> dict[str, float]:
-        """Single-source Dijkstra returning distances to all reachable nodes."""
+        """Single-source Dijkstra returning distances to all reachable nodes.
+
+        Cached: graph is static after construction, so the all-pairs distance
+        table is computed once and reused.
+        """
+        if self._all_distances is not None:
+            return self._all_distances[source_name]
+        return self._compute_distances_from(source_name)
+
+    def _compute_distances_from(self, source_name: str) -> dict[str, float]:
+        """Raw single-source Dijkstra (used to fill the all-pairs cache)."""
         dist = {name: float('inf') for name in self.nodes}
         dist[source_name] = 0.0
         pq = [(0.0, source_name)]
@@ -140,6 +153,11 @@ class Park:
                     dist[v] = new_dist
                     heapq.heappush(pq, (new_dist, v))
         return dist
+
+    def precompute_all_distances(self) -> None:
+        """Fill the all-pairs distance cache. Idempotent — call once after the
+        graph is fully built."""
+        self._all_distances = {name: self._compute_distances_from(name) for name in self.nodes}
 
     def shortest_path(self, source_name: str, target_name: str) -> tuple[list[str], float]:
         """Dijkstra's algorithm. Returns (path_as_node_names, total_time)."""
@@ -175,14 +193,18 @@ class Park:
         return path, dist[target_name]
 
     def travel_time(self, source_name: str, target_name: str) -> float:
-        """Total travel time between any two nodes."""
+        """Total travel time between any two nodes. O(1) once cache is built."""
         if source_name == target_name:
             return 0.0
+        if self._all_distances is not None:
+            return self._all_distances[source_name][target_name]
         _, time = self.shortest_path(source_name, target_name)
         return time
 
     def get_attractions(self) -> list[Node]:
-        return [n for n in self.nodes.values() if n.node_type == NodeType.ATTRACTION]
+        if self._attractions_cache is None:
+            self._attractions_cache = [n for n in self.nodes.values() if n.node_type == NodeType.ATTRACTION]
+        return self._attractions_cache
 
     def get_hubs(self) -> list[Node]:
         return [n for n in self.nodes.values() if n.node_type == NodeType.HUB]
@@ -224,21 +246,43 @@ class Agent:
         self.total_wait_time: float = 0.0
         self.total_travel_time: float = 0.0
         self.rides_completed: list[str] = []
+        self.rides_completed_count: dict[str, int] = {}  # O(1) re-ride count for utility()
         self.passes_used: int = 0
 
         # Per-agent preference multipliers (set during generation)
         self.preferences: dict[str, float] = {}
 
-        # Behavior type: "rational", "fatigue", "info_restricted", "proximity_bias"
-        self.behavior_type: str = "rational"
+        # Behaviors: any subset of {"fatigue", "info_restricted", "proximity_bias", "decision_paralysis"}
+        # Empty set = pure rational utility maximizer.
+        self.behaviors: set[str] = set()
         self.last_target: str | None = None  # for fatigue behavior
 
+        # Decision paralysis: when 2+ rides are within 5% utility, slow agents stall
+        # decision_speed in minutes; assigned at creation as one of {0, 1, 2, 4}
+        self.decision_speed: float = 0.0
+        self.paralysis_remaining: float = 0.0
+        self.paralysis_target: str | None = None
+        self.last_choice_paralyzed: bool = False
+        self.total_paralysis_time: float = 0.0
+
+        # Eating / resting: when active, agent walks back to land hub for a ~30-min meal
+        # once time_since_last_meal crosses hunger_threshold (drawn per-agent for variance).
+        self.hunger_threshold: float = 0.0  # 0 = behavior disabled
+        self.time_since_last_meal: float = 0.0
+        self.rest_remaining: float = 0.0
+        self.target_rest_hub: str | None = None
+        self.total_rest_time: float = 0.0
+        self.meals_taken: int = 0
+
         # Skip-the-line passes
-        self.pass_strategy: str = "none"  # "none", "preselect", "dynamic", "preselect_timed"
+        self.pass_strategy: str = "none"  # "none", "preselect", "dynamic", "preselect_timed", "express"
         self.preselect_passes: list[str] = []  # ride names (Strategy 1)
         self.dynamic_passes: int = 0           # remaining passes (Strategy 2)
         self.dynamic_pass_threshold: float = 30.0  # use pass if wait > this
         self.timed_passes: list[dict] = []     # Strategy 3: [{"ride", "slot_time", "window_start", "window_end", "used"}]
+        # Express Pass (Universal Orlando model): one skip per ride for any ride in park.
+        self.has_express_pass: bool = False
+        self.express_passes_used: set[str] = set()
 
     def _decay(self, current_time: float) -> float:
         """Linear happiness decay: full at arrival, zero at departure."""
@@ -254,6 +298,8 @@ class Agent:
             return ride_name in self.preselect_passes
         elif self.pass_strategy == "dynamic":
             return self.dynamic_passes > 0
+        elif self.pass_strategy == "express":
+            return self.has_express_pass and ride_name not in self.express_passes_used
         return False
 
     def has_active_timed_pass(self, ride_name: str, current_time: float) -> bool:
@@ -292,6 +338,11 @@ class Agent:
                         break
         elif self.pass_strategy == "dynamic" and self.dynamic_passes > 0:
             self.dynamic_passes -= 1
+            self.passes_used += 1
+        elif (self.pass_strategy == "express"
+              and self.has_express_pass
+              and ride_name not in self.express_passes_used):
+            self.express_passes_used.add(ride_name)
             self.passes_used += 1
 
     def assign_preselected_passes(self, park: Park) -> None:
@@ -385,6 +436,10 @@ class Agent:
                 will_skip = True
         elif self.would_use_dynamic_pass(W):
             will_skip = True
+        elif (self.pass_strategy == "express"
+              and self.has_express_pass
+              and attraction.name not in self.express_passes_used):
+            will_skip = True
 
         if will_skip:
             W = 0.0
@@ -401,40 +456,62 @@ class Agent:
             return float('-inf')
 
         # Diminishing returns on re-rides: 1/(1 + 0.5n)
-        times_ridden = self.rides_completed.count(attraction.name)
+        times_ridden = self.rides_completed_count.get(attraction.name, 0)
         reride_penalty = 1.0 / (1.0 + 0.5 * times_ridden)
 
         u = H * reride_penalty / math.sqrt(1.0 + W + D)
 
         # proximity_bias: every extra 30s of travel cuts utility 5%
-        if self.behavior_type == "proximity_bias" and D > 0:
+        if "proximity_bias" in self.behaviors and D > 0:
             u *= 0.95 ** (D / 0.5)
 
         return u
 
     def choose_next_attraction(self, park: Park, current_time: float,
                                stale_queues: dict[str, float] | None = None) -> str | None:
-        """Pick the attraction with highest utility. Returns None if nothing is worth it."""
-        best_name = None
-        best_util = 0.0  # threshold: only go if utility is positive
+        """Pick the attraction with highest utility. Returns None if nothing is worth it.
 
-        # Single Dijkstra from current position
+        Side effect: sets `self.last_choice_paralyzed = True` if 2+ attractions have
+        utilities within 5% of the chosen utility (only computed when decision_paralysis
+        behavior is active — saves a sort and an extra pass on the hot path otherwise).
+        """
+        # O(1) cached distance lookup once the graph is precomputed
         distances = park.shortest_distances_from(self.current_node)
 
+        track_paralysis = "decision_paralysis" in self.behaviors
+        all_utils: list[float] | None = [] if track_paralysis else None
+
+        best_util = 0.0
+        best_name: str | None = None
         for attraction in park.get_attractions():
             u = self.utility(attraction, park, current_time, distances, stale_queues)
-            if u > best_util:
-                best_util = u
-                best_name = attraction.name
+            if u > 0:
+                if track_paralysis:
+                    all_utils.append(u)
+                if u > best_util:
+                    best_util = u
+                    best_name = attraction.name
+
+        self.last_choice_paralyzed = False
+
+        if best_name is None:
+            self.last_target = None
+            return None
 
         # fatigue: require 5% improvement over last committed target to switch
-        if self.behavior_type == "fatigue" and self.last_target is not None and best_name != self.last_target:
+        if "fatigue" in self.behaviors and self.last_target is not None and best_name != self.last_target:
             last_node = park.nodes.get(self.last_target)
             if last_node is not None:
                 u_last = self.utility(last_node, park, current_time, distances, stale_queues)
                 if u_last > 0 and best_util <= 1.05 * u_last:
                     best_name = self.last_target
                     best_util = u_last
+
+        # paralysis: 2+ options within 5% of chosen utility means a near-tie exists
+        if track_paralysis:
+            within_5pct = sum(1 for u in all_utils if u >= 0.95 * best_util)
+            if within_5pct >= 2:
+                self.last_choice_paralyzed = True
 
         self.last_target = best_name
         return best_name
