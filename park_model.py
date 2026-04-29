@@ -46,13 +46,33 @@ class Node:
         self.cycle_timer: float = 0.0   # tracks time since last dispatch
 
     @property
-    def current_wait_time(self) -> float:
-        """Estimated wait time based on queue length, pending arrivals, and throughput."""
+    def wait_time_priority(self) -> float:
+        """Wait an agent in the priority queue would experience.
+        They're only blocked by people ahead of them in the priority queue itself,
+        because each ride cycle drains priority first up to capacity.
+        """
         if self.node_type == NodeType.HUB or self.capacity == 0:
             return 0.0
-        total_demand = len(self.queue) + self.pending_arrivals
-        cycles_needed = total_demand / self.capacity
+        cycles_needed = len(self.priority_queue) / self.capacity
         return cycles_needed * self.service_rate
+
+    @property
+    def wait_time_regular(self) -> float:
+        """Wait an agent in the regular queue would experience.
+        Blocked by the entire priority queue (which gets capacity first each cycle)
+        plus their position in the regular queue plus pending committed arrivals.
+        """
+        if self.node_type == NodeType.HUB or self.capacity == 0:
+            return 0.0
+        total_blocking = len(self.priority_queue) + len(self.queue) + self.pending_arrivals
+        cycles_needed = total_blocking / self.capacity
+        return cycles_needed * self.service_rate
+
+    @property
+    def current_wait_time(self) -> float:
+        """Backward-compat: regular-queue wait (the conservative/worst-case number).
+        New code should prefer wait_time_priority / wait_time_regular explicitly."""
+        return self.wait_time_regular
 
     def add_to_queue(self, agent) -> None:
         self.queue.append(agent)
@@ -275,8 +295,9 @@ class Agent:
         self.meals_taken: int = 0
 
         # Skip-the-line passes
-        self.pass_strategy: str = "none"  # "none", "preselect", "dynamic", "preselect_timed", "express"
+        self.pass_strategy: str = "none"  # "none", "preselect", "preselect_paid", "preselect_timed", "dynamic", "express"
         self.preselect_passes: list[str] = []  # ride names (Strategy 1)
+        self.has_preselect_pass: bool = False  # tracks adoption for paid version (true for all under free preselect)
         self.dynamic_passes: int = 0           # remaining passes (Strategy 2)
         self.dynamic_pass_threshold: float = 30.0  # use pass if wait > this
         self.timed_passes: list[dict] = []     # Strategy 3: [{"ride", "slot_time", "window_start", "window_end", "used"}]
@@ -294,7 +315,7 @@ class Agent:
 
     def has_pass_for(self, ride_name: str) -> bool:
         """Check if this agent can skip the queue for a given ride."""
-        if self.pass_strategy == "preselect":
+        if self.pass_strategy in ("preselect", "preselect_paid"):
             return ride_name in self.preselect_passes
         elif self.pass_strategy == "dynamic":
             return self.dynamic_passes > 0
@@ -326,7 +347,7 @@ class Agent:
 
     def consume_pass(self, ride_name: str, current_time: float = 0.0) -> None:
         """Use up a pass for the given ride."""
-        if self.pass_strategy == "preselect" and ride_name in self.preselect_passes:
+        if self.pass_strategy in ("preselect", "preselect_paid") and ride_name in self.preselect_passes:
             self.preselect_passes.remove(ride_name)
             self.passes_used += 1
         elif self.pass_strategy == "preselect_timed":
@@ -405,8 +426,16 @@ class Agent:
         """U(a) = H(a) * pref * decay * reride_penalty / sqrt(1 + W + D)
 
         Always non-negative. Higher enjoyment and lower wait/travel = higher utility.
-        If agent has a pass for this ride, W=0 in the formula.
-        stale_queues: pre-computed wait times from a shared board (info_restricted behavior).
+
+        W is the wait the agent would *actually* face for this attraction:
+          - If they'd use a pass: W = priority queue wait (NOT zero — they still queue
+            among other pass holders).
+          - Otherwise: W = regular queue wait, which includes the entire priority queue
+            ahead of them in addition to the regular queue.
+
+        For info_restricted agents, the shared snapshot reflects the regular wait
+        and pass holders assume W ≈ 0 (they don't have priority-queue length info on
+        their delayed wait-time board).
         """
         import math
 
@@ -419,30 +448,36 @@ class Agent:
 
         H = attraction.happiness * pref * decay
 
-        # info_restricted: use shared board snapshot instead of live wait
+        # Baseline wait this agent perceives if they did NOT use a pass.
+        # info_restricted: use the shared (stale) board, which reflects regular-queue wait.
         if stale_queues is not None:
-            W = stale_queues.get(attraction.name, 0.0)
+            W_baseline = stale_queues.get(attraction.name, 0.0)
         else:
-            W = attraction.current_wait_time
+            W_baseline = attraction.wait_time_regular
 
         # Check if agent would skip the queue with a pass
         will_skip = False
-        if self.pass_strategy == "preselect" and attraction.name in self.preselect_passes:
+        if self.pass_strategy in ("preselect", "preselect_paid") and attraction.name in self.preselect_passes:
             will_skip = True
         elif self.pass_strategy == "preselect_timed":
             if self.has_active_timed_pass(attraction.name, current_time):
                 will_skip = True
             elif self.get_upcoming_timed_pass(attraction.name, current_time):
                 will_skip = True
-        elif self.would_use_dynamic_pass(W):
+        elif self.would_use_dynamic_pass(W_baseline):
             will_skip = True
         elif (self.pass_strategy == "express"
               and self.has_express_pass
               and attraction.name not in self.express_passes_used):
             will_skip = True
 
+        # Pick the wait that actually applies to this agent for this ride.
         if will_skip:
-            W = 0.0
+            # Live agents see the priority queue's true length; info_restricted agents
+            # don't have priority-queue info on the stale board, so they assume ~0.
+            W = attraction.wait_time_priority if stale_queues is None else 0.0
+        else:
+            W = W_baseline
 
         # Use pre-computed distances if available, otherwise compute
         if distances is not None:

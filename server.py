@@ -25,7 +25,8 @@ NODES, EDGES = build_graph_layout(_PARK_FOR_LAYOUT)
 
 PASS_LABELS = {
     "none": "No Passes (Baseline)",
-    "preselect": "Preselect (Anytime)",
+    "preselect": "Preselect (Free, Anytime)",
+    "preselect_paid": "Preselect (Paid, Anytime)",
     "preselect_timed": "Preselect (Timed Slots)",
     "dynamic": "Dynamic (On-Demand)",
     "express": "Express Pass (Universal-style)",
@@ -77,6 +78,10 @@ def simulate():
     express_pct = float(payload.get("express_pct", 0.3))
     if not (0.0 <= express_pct <= 1.0):
         return jsonify({"error": f"express_pct must be in [0, 1]: got {express_pct}"}), 400
+    # Paid Preselect adopter fraction (only meaningful when pass_strategy == "preselect_paid")
+    preselect_pct = float(payload.get("preselect_pct", 0.3))
+    if not (0.0 <= preselect_pct <= 1.0):
+        return jsonify({"error": f"preselect_pct must be in [0, 1]: got {preselect_pct}"}), 400
 
     if pass_strategy not in PASS_LABELS:
         return jsonify({"error": f"unknown pass_strategy: {pass_strategy}"}), 400
@@ -92,6 +97,7 @@ def simulate():
         pass_strategy=pass_strategy,
         behaviors=behaviors,
         express_pct=express_pct,
+        preselect_pct=preselect_pct,
     )
     sim.generate_agents()
 
@@ -110,6 +116,8 @@ def simulate():
     pass_label = PASS_LABELS[pass_strategy]
     if pass_strategy == "express":
         pass_label = f"{pass_label} ({int(round(express_pct * 100))}%)"
+    elif pass_strategy == "preselect_paid":
+        pass_label = f"{pass_label} ({int(round(preselect_pct * 100))}%)"
     label = f"{pass_label} + {behavior_label}"
 
     return jsonify({
@@ -121,6 +129,7 @@ def simulate():
         "behaviors": sorted(behaviors),
         "seed": seed,
         "express_pct": express_pct,
+        "preselect_pct": preselect_pct,
     })
 
 

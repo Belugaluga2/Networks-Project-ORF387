@@ -15,7 +15,7 @@ class Simulation:
 
     def __init__(self, park: Park, dt: float = 1.0, seed: int = 42,
                  pass_strategy: str = "none", behaviors: list[str] | None = None,
-                 express_pct: float = 0.3):
+                 express_pct: float = 0.3, preselect_pct: float = 0.3):
         self.park = park
         self.dt = dt                    # time step in minutes
         self.rng = np.random.default_rng(seed)
@@ -26,9 +26,11 @@ class Simulation:
         self.behavior_rng = np.random.default_rng(seed ^ 0xDEADBEEF)
         self.current_time: float = PARK_OPEN
         self.agents: list[Agent] = []
-        self.pass_strategy = pass_strategy  # "none", "preselect", "preselect_timed", "dynamic", "express"
+        self.pass_strategy = pass_strategy  # "none", "preselect", "preselect_paid", "preselect_timed", "dynamic", "express"
         # Fraction of agents who hold an Express Pass when pass_strategy == "express"
         self.express_pct: float = float(express_pct)
+        # Fraction of agents who adopt the paid Preselect when pass_strategy == "preselect_paid"
+        self.preselect_pct: float = float(preselect_pct)
         # Any subset of {"fatigue", "info_restricted", "proximity_bias", "decision_paralysis", "eating_resting"};
         # empty/None = pure rational
         self.behaviors: set[str] = set(behaviors or [])
@@ -168,6 +170,12 @@ class Simulation:
             agent.hunger_threshold = float(np.clip(self.behavior_rng.normal(225, 15), 180, 270))
         if self.pass_strategy == "preselect":
             agent.assign_preselected_passes(self.park)
+            agent.has_preselect_pass = True  # everyone is a "holder" under the free version
+        elif self.pass_strategy == "preselect_paid":
+            # Probabilistically assign Preselect adopters based on user-specified %
+            if bool(self.behavior_rng.random() < self.preselect_pct):
+                agent.has_preselect_pass = True
+                agent.assign_preselected_passes(self.park)
         elif self.pass_strategy == "dynamic":
             agent.dynamic_passes = 3
         elif self.pass_strategy == "express":
@@ -223,10 +231,11 @@ class Simulation:
             self._set_state(agent, "departed")
 
         # Phase 4: Decisions — sequential best-response (anti-herding)
-        # Update shared wait-time board every 15 min (consumed by info_restricted agents)
+        # Update shared wait-time board every 15 min (consumed by info_restricted agents).
+        # The board reflects the regular-queue wait (what's posted on park signs).
         if (t - self.stale_last_updated) >= 15:
             for node in self.park.get_attractions():
-                self.stale_wait_times[node.name] = node.current_wait_time
+                self.stale_wait_times[node.name] = node.wait_time_regular
             self.stale_last_updated = t
 
         # Shuffle deciding agents; each sees updated queue state from prior decisions.
@@ -281,10 +290,11 @@ class Simulation:
                 agent.time_remaining = travel
                 self._set_state(agent, "traveling")
 
-                # Determine if agent will use a pass on arrival
+                # Determine if agent will use a pass on arrival.
+                # Dynamic-pass threshold uses the regular-queue wait (the wait they'd avoid).
                 target_node = self.park.nodes[best]
-                W = target_node.current_wait_time
-                if agent.pass_strategy == "preselect" and best in agent.preselect_passes:
+                W = target_node.wait_time_regular
+                if agent.pass_strategy in ("preselect", "preselect_paid") and best in agent.preselect_passes:
                     agent.using_pass = True
                 elif agent.pass_strategy == "preselect_timed" and agent.has_active_timed_pass(best, t):
                     agent.using_pass = True
@@ -381,7 +391,7 @@ class Simulation:
                 "departure": float(a.departure_time),
                 "rides": len(a.rides_completed),
                 "wait": float(a.total_wait_time),
-                "pass_holder": bool(a.has_express_pass),
+                "pass_holder": bool(a.has_express_pass or a.has_preselect_pass),
             })
         return records
 

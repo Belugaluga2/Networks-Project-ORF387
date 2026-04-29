@@ -96,6 +96,12 @@ canvas { display: block; width: 100%; height: 100%; }
                style="margin-left:6px; width:70px; background:#1a1a2e; color:#eee; border:1px solid #444; border-radius:3px; padding:2px 4px; font-size:12px;">
         % of guests
       </div>
+      <div id="preselect-pct-row" style="display:none; margin-top:6px; font-size:12px; color:#aaa;">
+        Paid Preselect adopters:
+        <input type="number" id="preselect-pct-input" value="30" min="0" max="100" step="1"
+               style="margin-left:6px; width:70px; background:#1a1a2e; color:#eee; border:1px solid #444; border-radius:3px; padding:2px 4px; font-size:12px;">
+        % of guests
+      </div>
       <label style="margin-top:8px;">People Actions (check any combination)</label>
       <div id="behavior-checkboxes"></div>
       <label style="margin-top:8px;">Randomness</label>
@@ -184,12 +190,14 @@ const HIST_COLOR_DEFAULT = "#4ecdc4";
 const HIST_COLOR_HOLDER  = "#ffe66d";  // Express Pass holders (paying)
 const HIST_COLOR_NON     = "#4ecdc4";  // non-holders
 
-function buildKey(strategy, behaviors, seed, expressPct) {
+function buildKey(strategy, behaviors, seed, expressPct, preselectPct) {
   const sorted = [...behaviors].sort().join("+") || "rational";
-  // express_pct only matters when strategy === "express", but include it
-  // unconditionally so cache lookups are consistent.
-  const exp = strategy === "express" ? `__exp${expressPct}` : "";
-  return `${strategy}__${sorted}${exp}__seed${seed}`;
+  // pct only matters when its strategy is selected, but we suffix unconditionally
+  // for that strategy so cache lookups are consistent.
+  let suffix = "";
+  if (strategy === "express") suffix = `__exp${expressPct}`;
+  else if (strategy === "preselect_paid") suffix = `__pre${preselectPct}`;
+  return `${strategy}__${sorted}${suffix}__seed${seed}`;
 }
 
 function getSelectedStrategy() {
@@ -197,16 +205,23 @@ function getSelectedStrategy() {
 }
 
 function getExpressPct() {
-  // Read the integer percentage from the UI (0-100), return as 0..1 fraction.
   const raw = document.getElementById("express-pct-input").value;
   const n = parseInt(raw, 10);
   if (!Number.isFinite(n)) return 0.3;
   return Math.min(100, Math.max(0, n)) / 100;
 }
 
-function updateExpressVisibility() {
-  const show = getSelectedStrategy() === "express";
-  document.getElementById("express-pct-row").style.display = show ? "block" : "none";
+function getPreselectPct() {
+  const raw = document.getElementById("preselect-pct-input").value;
+  const n = parseInt(raw, 10);
+  if (!Number.isFinite(n)) return 0.3;
+  return Math.min(100, Math.max(0, n)) / 100;
+}
+
+function updateStrategyParamVisibility() {
+  const strat = getSelectedStrategy();
+  document.getElementById("express-pct-row").style.display = (strat === "express") ? "block" : "none";
+  document.getElementById("preselect-pct-row").style.display = (strat === "preselect_paid") ? "block" : "none";
 }
 
 function getSelectedBehaviors() {
@@ -257,9 +272,10 @@ function init() {
     opt.textContent = label;
     stratSelect.appendChild(opt);
   }
-  stratSelect.addEventListener("change", () => { updateExpressVisibility(); markDirty(); });
+  stratSelect.addEventListener("change", () => { updateStrategyParamVisibility(); markDirty(); });
   document.getElementById("express-pct-input").addEventListener("input", markDirty);
-  updateExpressVisibility();
+  document.getElementById("preselect-pct-input").addEventListener("input", markDirty);
+  updateStrategyParamVisibility();
 
   const checkboxesDiv = document.getElementById("behavior-checkboxes");
   for (const [key, label] of Object.entries(parkData.behavior_labels)) {
@@ -314,7 +330,8 @@ function markDirty() {
   if (getSeedMode() === "reproducible") {
     const seed = getFixedSeed();
     const expressPct = Math.round(getExpressPct() * 100);
-    const key = buildKey(getSelectedStrategy(), getSelectedBehaviors(), seed, expressPct);
+    const preselectPct = Math.round(getPreselectPct() * 100);
+    const key = buildKey(getSelectedStrategy(), getSelectedBehaviors(), seed, expressPct, preselectPct);
     if (resultCache.has(key)) {
       activeKey = key;
       currentFrame = 0;
@@ -339,11 +356,13 @@ async function runSimulation() {
   const seedMode = getSeedMode();
   const expressFrac = getExpressPct();
   const expressPctInt = Math.round(expressFrac * 100);
+  const preselectFrac = getPreselectPct();
+  const preselectPctInt = Math.round(preselectFrac * 100);
 
   // Reproducible mode can hit the cache directly; random mode always re-runs.
   if (seedMode === "reproducible") {
     const seed = getFixedSeed();
-    const cachedKey = buildKey(strategy, behaviors, seed, expressPctInt);
+    const cachedKey = buildKey(strategy, behaviors, seed, expressPctInt, preselectPctInt);
     if (resultCache.has(cachedKey)) {
       activeKey = cachedKey;
       currentFrame = 0;
@@ -362,7 +381,10 @@ async function runSimulation() {
   const t0 = performance.now();
   setStatus("Running simulation (~10–15s)…");
   try {
-    const payload = {pass_strategy: strategy, behaviors: behaviors, express_pct: expressFrac};
+    const payload = {
+      pass_strategy: strategy, behaviors: behaviors,
+      express_pct: expressFrac, preselect_pct: preselectFrac,
+    };
     if (seedMode === "reproducible") payload.seed = getFixedSeed();
     const resp = await fetch("/api/simulate", {
       method: "POST",
@@ -374,8 +396,9 @@ async function runSimulation() {
       throw new Error(err.error || "simulation failed");
     }
     const result = await resp.json();
-    const resultPctInt = Math.round((result.express_pct ?? expressFrac) * 100);
-    const key = buildKey(strategy, behaviors, result.seed, resultPctInt);
+    const resultExpInt = Math.round((result.express_pct ?? expressFrac) * 100);
+    const resultPreInt = Math.round((result.preselect_pct ?? preselectFrac) * 100);
+    const key = buildKey(strategy, behaviors, result.seed, resultExpInt, resultPreInt);
     resultCache.set(key, result);
     if (baselineSummary === null) baselineSummary = result.summary;
     activeKey = key;
@@ -474,6 +497,7 @@ function drawHistogram() {
   }
 
   const isExpress = result.pass_strategy === "express";
+  const isStacked = isExpress || result.pass_strategy === "preselect_paid";
 
   // Compute happiness range — use 99th percentile to clip outliers
   const happiness = filtered.map(a => a.happiness).sort((a, b) => a - b);
@@ -489,7 +513,7 @@ function drawHistogram() {
     if (a.happiness < 0) continue;
     if (a.happiness > maxH) { clippedCount++; continue; }
     const idx = Math.min(numBins - 1, Math.floor(a.happiness / binWidth));
-    if (isExpress && a.pass_holder) binsHolder[idx]++;
+    if (isStacked && a.pass_holder) binsHolder[idx]++;
     else binsNon[idx]++;
   }
   const binsTotal = binsHolder.map((v, i) => v + binsNon[i]);
@@ -529,7 +553,7 @@ function drawHistogram() {
       histCtx.fillRect(x + 0.5, yCursor - nonH, barW - 1, nonH);
       yCursor -= nonH;
     }
-    if (isExpress && holderH > 0) {
+    if (isStacked && holderH > 0) {
       histCtx.fillStyle = HIST_COLOR_HOLDER;
       histCtx.fillRect(x + 0.5, yCursor - holderH, barW - 1, holderH);
     }
@@ -557,7 +581,7 @@ function drawHistogram() {
   const clipNote = clippedCount > 0
     ? ` | <span style="color:#888;">top 1% (>${maxH.toFixed(0)}) clipped from chart: ${clippedCount.toLocaleString()}</span>`
     : "";
-  if (isExpress) {
+  if (isStacked) {
     legend.innerHTML =
       `<span><span class="swatch" style="background:${HIST_COLOR_HOLDER}"></span>Pass Holders</span>` +
       `<span><span class="swatch" style="background:${HIST_COLOR_NON}"></span>Non-Holders</span>`;
