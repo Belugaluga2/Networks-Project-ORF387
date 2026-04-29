@@ -37,6 +37,7 @@ BEHAVIOR_LABELS = {
     "proximity_bias": "Proximity Bias",
     "decision_paralysis": "Decision Paralysis",
     "eating_resting": "Eating / Resting",
+    "max_utility": "Max Utility (Social Planner)",
 }
 
 

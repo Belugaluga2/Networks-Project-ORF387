@@ -143,6 +143,8 @@ def export_visualization_data(output_path: str = "viz_data.json"):
         "info_restricted": "Information Restrictions",
         "proximity_bias": "Proximity Bias",
         "decision_paralysis": "Decision Paralysis",
+        "eating_resting": "Eating / Resting",
+        "max_utility": "Max Utility (Social Planner)",
     }
 
     all_strategies = {}

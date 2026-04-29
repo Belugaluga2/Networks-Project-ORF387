@@ -229,81 +229,87 @@ class Simulation:
                 self.stale_wait_times[node.name] = node.current_wait_time
             self.stale_last_updated = t
 
-        # Shuffle deciding agents; each sees updated queue state from prior decisions.
-        # Snapshot to a list because transitions during the loop modify bucket_deciding.
-        deciding = list(self.bucket_deciding)
-        self.rng.shuffle(deciding)
+        # max_utility behavior: skip the per-agent shuffle/decide loop and run a
+        # centralized social-planner assignment instead. Adapted from Tanay's
+        # original implementation to use the bucket-based state machine.
+        if "max_utility" in self.behaviors:
+            self._assign_agents_centrally(t)
+        else:
+            # Shuffle deciding agents; each sees updated queue state from prior decisions.
+            # Snapshot to a list because transitions during the loop modify bucket_deciding.
+            deciding = list(self.bucket_deciding)
+            self.rng.shuffle(deciding)
 
-        for agent in deciding:
-            stale = self.stale_wait_times if "info_restricted" in agent.behaviors else None
+            for agent in deciding:
+                stale = self.stale_wait_times if "info_restricted" in agent.behaviors else None
 
-            # Hunger trigger: walk back to a hub for a meal if past threshold and time allows
-            if (
-                self.has_eating
-                and agent.hunger_threshold > 0
-                and agent.time_since_last_meal >= agent.hunger_threshold
-                and (agent.departure_time - t) >= 32
-            ):
-                current = self.park.nodes[agent.current_node]
-                if current.node_type == NodeType.HUB:
-                    agent.rest_remaining = float(np.clip(self.rng.normal(30, 5), 25, 35))
-                    self._set_state(agent, "resting")
-                else:
-                    hub = self.park.hub_for_attraction(agent.current_node)
-                    if hub is not None:
-                        agent.target_node = hub.name
-                        agent.target_rest_hub = hub.name
-                        agent.time_remaining = self.park.travel_time(agent.current_node, hub.name)
-                        agent.using_pass = False
-                        self._set_state(agent, "traveling")
-                continue
-
-            # If currently paralyzed, count down and skip until done
-            if agent.paralysis_remaining > 0:
-                agent.paralysis_remaining -= self.dt
-                agent.total_paralysis_time += self.dt
-                if agent.paralysis_remaining > 0:
+                # Hunger trigger: walk back to a hub for a meal if past threshold and time allows
+                if (
+                    self.has_eating
+                    and agent.hunger_threshold > 0
+                    and agent.time_since_last_meal >= agent.hunger_threshold
+                    and (agent.departure_time - t) >= 32
+                ):
+                    current = self.park.nodes[agent.current_node]
+                    if current.node_type == NodeType.HUB:
+                        agent.rest_remaining = float(np.clip(self.rng.normal(30, 5), 25, 35))
+                        self._set_state(agent, "resting")
+                    else:
+                        hub = self.park.hub_for_attraction(agent.current_node)
+                        if hub is not None:
+                            agent.target_node = hub.name
+                            agent.target_rest_hub = hub.name
+                            agent.time_remaining = self.park.travel_time(agent.current_node, hub.name)
+                            agent.using_pass = False
+                            self._set_state(agent, "traveling")
                     continue
-                # Paralysis just ended — commit to the locked-in target
-                best = agent.paralysis_target
-                agent.paralysis_target = None
-            else:
-                best = agent.choose_next_attraction(self.park, t, stale_queues=stale)
-                # Trigger paralysis on a fresh near-tie decision
-                if best is not None and agent.last_choice_paralyzed and agent.decision_speed > 0:
-                    agent.paralysis_remaining = agent.decision_speed
-                    agent.paralysis_target = best
-                    continue  # don't commit this step
 
-            if best is not None:
-                travel = self.park.travel_time(agent.current_node, best)
-                agent.target_node = best
-                agent.time_remaining = travel
-                self._set_state(agent, "traveling")
-
-                # Determine if agent will use a pass on arrival
-                target_node = self.park.nodes[best]
-                W = target_node.current_wait_time
-                if agent.pass_strategy == "preselect" and best in agent.preselect_passes:
-                    agent.using_pass = True
-                elif agent.pass_strategy == "preselect_timed" and agent.has_active_timed_pass(best, t):
-                    agent.using_pass = True
-                elif agent.would_use_dynamic_pass(W):
-                    agent.using_pass = True
-                elif (agent.pass_strategy == "express"
-                      and agent.has_express_pass
-                      and best not in agent.express_passes_used):
-                    agent.using_pass = True
+                # If currently paralyzed, count down and skip until done
+                if agent.paralysis_remaining > 0:
+                    agent.paralysis_remaining -= self.dt
+                    agent.total_paralysis_time += self.dt
+                    if agent.paralysis_remaining > 0:
+                        continue
+                    # Paralysis just ended — commit to the locked-in target
+                    best = agent.paralysis_target
+                    agent.paralysis_target = None
                 else:
-                    agent.using_pass = False
+                    best = agent.choose_next_attraction(self.park, t, stale_queues=stale)
+                    # Trigger paralysis on a fresh near-tie decision
+                    if best is not None and agent.last_choice_paralyzed and agent.decision_speed > 0:
+                        agent.paralysis_remaining = agent.decision_speed
+                        agent.paralysis_target = best
+                        continue  # don't commit this step
 
-                # Signal commitment so next agent sees updated wait estimate
-                # Pass users don't add to regular queue pressure
-                if not agent.using_pass:
-                    target_node.pending_arrivals += 1
-            else:
-                # Nothing worth doing — depart early
-                self._set_state(agent, "departed")
+                if best is not None:
+                    travel = self.park.travel_time(agent.current_node, best)
+                    agent.target_node = best
+                    agent.time_remaining = travel
+                    self._set_state(agent, "traveling")
+
+                    # Determine if agent will use a pass on arrival
+                    target_node = self.park.nodes[best]
+                    W = target_node.current_wait_time
+                    if agent.pass_strategy == "preselect" and best in agent.preselect_passes:
+                        agent.using_pass = True
+                    elif agent.pass_strategy == "preselect_timed" and agent.has_active_timed_pass(best, t):
+                        agent.using_pass = True
+                    elif agent.would_use_dynamic_pass(W):
+                        agent.using_pass = True
+                    elif (agent.pass_strategy == "express"
+                          and agent.has_express_pass
+                          and best not in agent.express_passes_used):
+                        agent.using_pass = True
+                    else:
+                        agent.using_pass = False
+
+                    # Signal commitment so next agent sees updated wait estimate
+                    # Pass users don't add to regular queue pressure
+                    if not agent.using_pass:
+                        target_node.pending_arrivals += 1
+                else:
+                    # Nothing worth doing — depart early
+                    self._set_state(agent, "departed")
 
         # Phase 5: Travel updates — only iterate the traveling bucket.
         # Snapshot to a list because some agents transition out during the loop.
@@ -359,6 +365,142 @@ class Simulation:
 
         # Advance time
         self.current_time += self.dt
+
+    # ------------------------------------------------------------------
+    # Central planner assignment (max_utility behavior)
+    # ------------------------------------------------------------------
+
+    def _assign_agents_centrally(self, deciding: list, t: float) -> None:
+        """Social planner: assign agents in descending utility order so high-value
+        agent-ride pairs are locked in first. Each assignment updates pending_arrivals
+        live, so later agents see realistic queue pressure and self-select away from
+        congested rides — reducing herding compared to the Nash equilibrium."""
+        if not deciding:
+            return
+
+        attractions = self.park.get_attractions()
+
+        # Cache Dijkstra per unique source node (shared across agents at same location)
+        dist_cache: dict = {}
+        def get_dist(node_name):
+            if node_name not in dist_cache:
+                dist_cache[node_name] = self.park.shortest_distances_from(node_name)
+            return dist_cache[node_name]
+
+        # Score each agent by their single best possible utility (for priority ordering)
+        scored = []
+        for agent in deciding:
+            distances = get_dist(agent.current_node)
+            best_u = max(
+                (agent.utility(attr, self.park, t, distances) for attr in attractions),
+                default=0.0,
+            )
+            scored.append((best_u, agent))
+
+        # Process highest-value agents first — they get first pick
+        scored.sort(key=lambda x: -x[0])
+
+        for _, agent in scored:
+            # Re-evaluate with live pending_arrivals reflecting prior assignments this step
+            distances = get_dist(agent.current_node)
+            best_ride, best_u = None, 0.0
+            for attr in attractions:
+                u = agent.utility(attr, self.park, t, distances)
+                if u > best_u:
+                    best_u = u
+                    best_ride = attr.name
+
+            if best_ride is None:
+                agent.state = "departed"
+                continue
+
+            travel = self.park.travel_time(agent.current_node, best_ride)
+            agent.target_node = best_ride
+            agent.time_remaining = travel
+            agent.state = "traveling"
+
+            target_node = self.park.nodes[best_ride]
+            W = target_node.current_wait_time
+            if agent.pass_strategy == "preselect" and best_ride in agent.preselect_passes:
+                agent.using_pass = True
+            elif agent.pass_strategy == "preselect_timed" and agent.has_active_timed_pass(best_ride, t):
+                agent.using_pass = True
+            elif agent.would_use_dynamic_pass(W):
+                agent.using_pass = True
+            else:
+                agent.using_pass = False
+
+            if not agent.using_pass:
+                target_node.pending_arrivals += 1
+
+    # ------------------------------------------------------------------
+    # Central planner assignment (max_utility behavior)
+    # ------------------------------------------------------------------
+
+    def _assign_agents_centrally(self, t: float) -> None:
+        """Social planner: process deciding agents in descending best-utility order
+        so high-value agent-ride pairs lock in first. Each assignment updates
+        pending_arrivals live, so later agents see realistic queue pressure and
+        self-select away from congested rides — reducing herding compared to the
+        Nash equilibrium under purely individual decisions."""
+        deciding = list(self.bucket_deciding)
+        if not deciding:
+            return
+
+        attractions = self.park.get_attractions()
+
+        # Score each agent by their best possible utility (used only for priority order)
+        scored = []
+        for agent in deciding:
+            distances = self.park.shortest_distances_from(agent.current_node)
+            stale = self.stale_wait_times if "info_restricted" in agent.behaviors else None
+            best_u = 0.0
+            for attr in attractions:
+                u = agent.utility(attr, self.park, t, distances, stale)
+                if u > best_u:
+                    best_u = u
+            scored.append((best_u, agent.agent_id, agent))
+
+        # Highest-value agents get first pick
+        scored.sort(key=lambda x: (-x[0], x[1]))
+
+        for _, _, agent in scored:
+            distances = self.park.shortest_distances_from(agent.current_node)
+            stale = self.stale_wait_times if "info_restricted" in agent.behaviors else None
+            best_ride, best_u = None, 0.0
+            for attr in attractions:
+                u = agent.utility(attr, self.park, t, distances, stale)
+                if u > best_u:
+                    best_u = u
+                    best_ride = attr.name
+
+            if best_ride is None:
+                self._set_state(agent, "departed")
+                continue
+
+            travel = self.park.travel_time(agent.current_node, best_ride)
+            agent.target_node = best_ride
+            agent.time_remaining = travel
+            self._set_state(agent, "traveling")
+
+            # Pass-strategy arm (mirrors the normal Phase 4 logic)
+            target_node = self.park.nodes[best_ride]
+            W = target_node.current_wait_time
+            if agent.pass_strategy == "preselect" and best_ride in agent.preselect_passes:
+                agent.using_pass = True
+            elif agent.pass_strategy == "preselect_timed" and agent.has_active_timed_pass(best_ride, t):
+                agent.using_pass = True
+            elif agent.would_use_dynamic_pass(W):
+                agent.using_pass = True
+            elif (agent.pass_strategy == "express"
+                  and agent.has_express_pass
+                  and best_ride not in agent.express_passes_used):
+                agent.using_pass = True
+            else:
+                agent.using_pass = False
+
+            if not agent.using_pass:
+                target_node.pending_arrivals += 1
 
     # ------------------------------------------------------------------
     # Run
