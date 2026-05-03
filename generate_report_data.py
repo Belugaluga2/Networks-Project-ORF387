@@ -136,7 +136,7 @@ def plot_comparison_happiness(rows: list[dict]) -> None:
     stds = [np.std(by_strat[s]) for s in PASS_STRATEGIES]
     labels = [PASS_LABELS[s] for s in PASS_STRATEGIES]
 
-    fig, ax = plt.subplots(figsize=(9, 5))
+    fig, ax = plt.subplots(figsize=(9, 7))
     colors = ["#888888", "#4ecdc4", "#a855f7", "#ef4444", "#ffe66d"]
     bars = ax.bar(labels, means, yerr=stds, color=colors, edgecolor="black",
                   capsize=5, error_kw={"linewidth": 1.5})
@@ -150,6 +150,8 @@ def plot_comparison_happiness(rows: list[dict]) -> None:
     ax.set_title("Total Park Happiness by Strategy (mean ± std over 3 seeds)")
     ax.tick_params(axis="x", labelrotation=15)
     ax.grid(axis="y", alpha=0.3)
+    # Give the value labels above the bars headroom so they don't crowd the title.
+    ax.set_ylim(0, max(means) * 1.22)
     fig.tight_layout()
     fig.savefig(FIG_DIR / "comparison_happiness.png", dpi=140)
     plt.close(fig)
@@ -162,7 +164,7 @@ def plot_comparison_avg_metrics(rows: list[dict]) -> None:
         for k in ["avg_happiness", "avg_wait", "avg_rides"]:
             by_strat[r["strategy"]][k].append(r[k])
 
-    fig, axes = plt.subplots(1, 3, figsize=(14, 4.5))
+    fig, axes = plt.subplots(1, 3, figsize=(14, 6.5))
     metrics = [("avg_happiness", "Avg Happiness per Agent"),
                ("avg_wait", "Avg Total Wait (min)"),
                ("avg_rides", "Avg Rides Completed")]
@@ -175,6 +177,7 @@ def plot_comparison_avg_metrics(rows: list[dict]) -> None:
         ax.set_title(title)
         ax.tick_params(axis="x", labelrotation=20, labelsize=8)
         ax.grid(axis="y", alpha=0.3)
+        ax.set_ylim(0, max(means) * 1.18)
     fig.suptitle("Per-Strategy Aggregates (mean ± std over 3 seeds)", y=1.02, fontsize=13)
     fig.tight_layout()
     fig.savefig(FIG_DIR / "comparison_avg_metrics.png", dpi=140)

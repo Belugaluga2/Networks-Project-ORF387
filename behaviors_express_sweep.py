@@ -177,25 +177,28 @@ def main():
         peak_pct, peak_val = max(valid, key=lambda x: x[1])
         ax_l.annotate(f"System mean peaks at {peak_pct}%\n(avgH = {peak_val:.1f})",
                       xy=(peak_pct, peak_val),
-                      xytext=(peak_pct + 5, peak_val - 7),
+                      xytext=(0.30, 0.55), textcoords="axes fraction",
                       arrowprops=dict(arrowstyle="->", color="#a855f7", lw=1.2),
-                      fontsize=10, color="#a855f7",
-                      bbox=dict(boxstyle="round,pad=0.3", fc="#1a1a2e", ec="#a855f7", alpha=0.0))
+                      fontsize=10, color="#a855f7")
 
     ax_l.set_xlabel("Express Pass Participation %")
     ax_l.set_ylabel("Mean Total Happiness")
     ax_l.set_xticks(pcts)
     ax_l.grid(alpha=0.3)
-    ax_l.legend(loc="center left")
 
     # Gap ratio on right axis
     ax_r = ax_l.twinx()
-    ax_r.plot(pcts, gap_ratios, "^--", color="#ef4444", label="Gap (Holder/Non-Holder)",
-              markersize=7, linewidth=1.5, alpha=0.85, markeredgecolor="black")
+    ax_r.plot(pcts, gap_ratios, "^--", color="#ef4444",
+              markersize=7, linewidth=1.5, alpha=0.85, markeredgecolor="black",
+              label="Gap (Holder/Non-Holder)")
     ax_r.set_ylabel("Holder / Non-Holder Mean Ratio", color="#ef4444")
     ax_r.tick_params(axis="y", labelcolor="#ef4444")
-    ax_r.legend(loc="center right")
     ax_r.axhline(y=1, color="#ef4444", linestyle=":", alpha=0.4)
+
+    # Combined legend on the bottom-left, drawing handles from both axes
+    lines_l, labels_l = ax_l.get_legend_handles_labels()
+    lines_r, labels_r = ax_r.get_legend_handles_labels()
+    ax_l.legend(lines_l + lines_r, labels_l + labels_r, loc="lower left")
 
     fig.suptitle("Express Pass Sweep with All Agent Behaviors Enabled",
                  fontsize=14, y=0.98)
